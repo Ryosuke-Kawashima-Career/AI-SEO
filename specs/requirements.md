@@ -1,4 +1,4 @@
-# Requirements Specification (要件仕様書)
+# Requirements Specification
 
 > **Source**: [user_story.md](user_story.md)
 > **Status**: Draft
