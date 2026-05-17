@@ -24,7 +24,7 @@
 
 The SEO Evaluation System is a web-based monitoring platform that:
 
-1. Accepts a registry of target page URLs managed by an authorized user.
+1. Accepts a registry of target page URLs managed.
 2. Executes automated Lighthouse scans — via the Google PageSpeed Insights API — on a configurable schedule.
 3. Persists all score records historically in a relational database.
 4. Presents current and historical scores on an interactive dashboard.
@@ -45,7 +45,6 @@ The SEO Evaluation System is a web-based monitoring platform that:
 | **SEO Scanner** | Google PageSpeed Insights API | Server-side Lighthouse runner; no headless Chrome installation required |
 | **Database** | SQLite (via SQLAlchemy ORM) | Zero-config for MVP; adapter layer allows migration to PostgreSQL |
 | **Email** | Python `smtplib` | Standard library; SMTP relay configurable via environment variables |
-| **Auth** | HTTP Basic Auth + JWT session token | Simple, stateless; no external auth service needed for MVP |
 | **Containerization** | Docker + docker-compose | Reproducible environment; single `docker-compose up` to start |
 
 ---
@@ -92,14 +91,14 @@ graph TD
 
 | Component | Responsibility | Requirement |
 |---|---|---|
-| **React SPA** | Renders all 6 pages; calls REST API | FR-01, FR-04, FR-05, FR-07 |
-| **FastAPI API Layer** | Route handling, auth middleware, request validation | All FRs |
+| **React SPA** | Renders all 5 pages; calls REST API | FR-01, FR-04, FR-05, FR-07 |
+| **FastAPI API Layer** | Route handling, request validation | All FRs |
 | **ScanRunner** | Creates scan jobs, iterates URLs, retries on failure (max 3×) | FR-02, FR-06 |
 | **APScheduler** | Fires ScanRunner at configured cron time | FR-06 |
 | **ScannerAdapter** | Abstract base class — `fetch_scores(url) → ScoreRecord` | NFR-05 |
 | **LighthouseAdapter** | Calls PageSpeed Insights API; maps response to `ScoreRecord` | FR-02, FR-03 |
 | **Notifier** | Sends scan-completion email via SMTP | FR-06 |
-| **SQLite DB** | Persists all domain data | FR-01~07, NFR-04 |
+| **SQLite DB** | Persists all domain data | FR-01~07 |
 
 ---
 
@@ -237,20 +236,6 @@ stateDiagram-v2
     failed --> [*]
 ```
 
-### 5.3 User Session State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> unauthenticated
-    unauthenticated --> authenticated : POST /auth/login\n(valid credentials)
-    authenticated --> unauthenticated : POST /auth/logout\nor JWT expired
-    authenticated --> dashboard : navigate to /
-    authenticated --> url_manager : navigate to /urls
-    authenticated --> history : navigate to /history
-    authenticated --> compare : navigate to /compare
-    authenticated --> settings : navigate to /settings
-```
-
 ---
 
 ## 6. Data Schema
@@ -321,7 +306,7 @@ status = "pass"    if ALL dimension_scores ≥ 80
 
 ## 7. API Design
 
-All endpoints are prefixed `/api`. All requests/responses use `application/json`. Authentication uses a Bearer JWT token issued at `/auth/login`.
+All endpoints are prefixed `/api`. All requests/responses use `application/json`.
 
 ### URL Management — FR-01
 
@@ -364,7 +349,6 @@ AI-SEO/
 ├── backend/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── auth.py          # POST /auth/login, /auth/logout
 │   │   │   ├── urls.py          # FR-01: URL CRUD
 │   │   │   ├── scan.py          # FR-02, FR-06: job trigger + status
 │   │   │   ├── results.py       # FR-04, FR-05, FR-07: dashboard + history + compare
@@ -403,7 +387,6 @@ AI-SEO/
 │   │   │   ├── StatusBadge.tsx  # Pass / Warning / Fail badge
 │   │   │   └── Navbar.tsx
 │   │   ├── pages/
-│   │   │   ├── Login.tsx        # Auth — NFR-04
 │   │   │   ├── Dashboard.tsx    # FR-04
 │   │   │   ├── UrlManager.tsx   # FR-01
 │   │   │   ├── History.tsx      # FR-05
@@ -433,7 +416,6 @@ AI-SEO/
 ### 9.1 Page Map
 
 ```text
-/login          → Login Page
 /               → Dashboard       (FR-04)
 /urls           → URL Manager     (FR-01)
 /history        → History View    (FR-05)
