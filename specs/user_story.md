@@ -1,0 +1,7 @@
+# User Story & Requirements
+
+## User Story
+
+**As a** president of an Online Traveling Agency, which sells flight and hotel bookings on the web site,
+**I want to** have a SEO evaluation system, which automatically gets the SEO scores of designated pages and shows them on a dashboard,
+**So that** I can monitor the current SEO scores of the target pages and check the effects of the measurement for SEO improvement from the dashboard.
