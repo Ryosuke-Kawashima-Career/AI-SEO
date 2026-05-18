@@ -2,7 +2,7 @@
 
 > **Source**: [user_story.md](user_story.md)
 > **Status**: Draft
-> **Last Updated**: 2026-05-17
+> **Last Updated**: 2026-05-18
 
 ---
 
@@ -16,9 +16,10 @@ User Story
   ├── FR-04  Dashboard Display
   ├── FR-05  Historical Score Tracking
   ├── FR-06  Scheduled Automatic Scanning
-  └── FR-07  Score Change Comparison
-        ├── NFR-01 ~ NFR-06
-        └── AC-01 ~ AC-9
+  ├── FR-07  Score Change Comparison
+  └── FR-08  SEO Improvement Suggestion
+        ├── NFR-01 ~ NFR-08
+        └── AC-01 ~ AC-11
 ```
 
 ---
@@ -66,7 +67,7 @@ User Story
 | **Description** | The system must present a visual dashboard displaying the latest SEO scores for all registered URLs. |
 | **Input** | Latest scan records retrieved from the data store |
 | **Output** | A rendered dashboard page showing, per URL: current scores for all dimensions in FR-03, scan timestamp, and a status indicator (pass / warning / fail) based on score thresholds. |
-| **Constraints** | - Score threshold for "pass": ≥ 80. "Warning": 50–79. "Fail": < 50. - Dashboard must be accessible via a standard web browser without additional software installation.|
+| **Constraints** | - Score threshold for "pass": ≥ 90. "Warning": 50–89. "Fail": < 50. - Dashboard must be accessible via a standard web browser without additional software installation.|
 
 ---
 
@@ -103,6 +104,18 @@ User Story
 
 ---
 
+### FR-08 — SEO Improvement Suggestion
+
+| Item | Detail |
+|---|---|
+| **Description** | The system must generate actionable SEO improvement suggestions for a target URL, derived from (a) the latest Lighthouse audit findings and (b) the historical effect of previously applied measures recorded in the system, so that an SEO specialist can prioritize the most impactful improvements. |
+| **Actor** | SEO Specialist |
+| **Input** | Target URL; the latest scan record (FR-02 / FR-03); historical scan records (FR-05); the set of failing or sub-optimal Lighthouse audit items (`audits[].score < 0.9`). |
+| **Output** | A ranked list of suggestions. Each suggestion item must contain: 1. **Affected Dimension** (e.g., Performance, SEO, Accessibility). 2. **Action Description** in plain language (e.g., "Add `alt` attributes to images"). 3. **Originating Lighthouse Audit ID** (e.g., `image-alt`). 4. **Estimated Score Impact** (Δ) per dimension, derived from past observed deltas (FR-07) of comparable measures. 5. **Confidence Level** (`high` / `medium` / `low`) based on historical sample size. |
+| **Constraints** | - Suggestions must be ranked by descending **Estimated Score Impact** (Δ). - Each suggestion must cite the originating Lighthouse audit; suggestions without traceable evidence must not be displayed. - When no historical comparable measure exists, **Confidence Level** must default to `low` and Estimated Score Impact may be displayed as `N/A`. - The suggestion module must be encapsulated behind an adapter interface (per NFR-05) so the underlying inference engine can be replaced without altering dashboard logic. |
+
+---
+
 ## 2. Non-Functional Requirements
 
 | ID | Category | Requirement | Metric |
@@ -113,6 +126,8 @@ User Story
 | **NFR-04** | Data Retention | Historical score storage | Scan records must be retained for a minimum of 12 months from the scan date |
 | **NFR-05** | Maintainability | Scoring engine replaceability | The SEO scoring API integration must be encapsulated behind an adapter interface so that the provider can be swapped without modifying dashboard logic |
 | **NFR-06** | Browser Compatibility | Supported browsers | Latest 2 major versions of Chrome, Firefox, Safari, and Edge |
+| **NFR-07** | Performance (Suggestion) | Suggestion generation latency | < 5 seconds per URL on the latest scan record, measured server-side |
+| **NFR-08** | Explainability | Suggestion traceability | Every suggestion must be traceable to (a) a specific Lighthouse audit ID and (b) the historical scan records used to estimate its impact; this mapping must be queryable via API for audit purposes |
 
 ---
 
@@ -179,8 +194,8 @@ Given scan records exist for all registered URLs
 When the user opens the dashboard
 Then the latest score for each URL is displayed within 3 seconds
 And each URL row shows a status indicator:
-  "pass" (green) if all dimension scores ≥ 80
-  "warning" (yellow) if any score is between 50–79
+  "pass" (green) if all dimension scores ≥ 90
+  "warning" (yellow) if any score is between 50–89
   "fail" (red) if any score is < 50
 ```
 
@@ -238,3 +253,35 @@ And no comparison table is rendered
 ```
 
 **Verification**: Manual UI test — select a date with no record and confirm error message.
+
+---
+
+### AC-10 — SEO Improvement Suggestion Display (→ FR-08)
+
+```gherkin
+Given a scan record exists for "https://example-ota.com/flights"
+  And at least one Lighthouse audit has a score below 0.9
+When the SEO specialist opens the "Suggestions" view for that URL
+Then a ranked list of suggestions is displayed within 5 seconds
+And each suggestion shows:
+  Affected Dimension, Action Description, Lighthouse Audit ID,
+  Estimated Score Impact (Δ), and Confidence Level (high / medium / low)
+And the list is sorted in descending order of Estimated Score Impact
+```
+
+**Verification**: Automated integration test — seed a scan record with known failing audits, invoke the suggestion endpoint, assert ranking order and required fields; manual UI test for rendering latency.
+
+---
+
+### AC-11 — Suggestion Confidence Fallback (→ FR-08, NFR-08)
+
+```gherkin
+Given a failing Lighthouse audit "image-alt" exists in the latest scan
+  And no historical scan record contains a prior remediation of "image-alt"
+When the system generates suggestions for that URL
+Then the suggestion for "image-alt" is still displayed
+And its Confidence Level is set to "low"
+And its Estimated Score Impact is displayed as "N/A"
+```
+
+**Verification**: Automated unit test — provide a fixture with zero historical precedent for the audit and assert the suggestion item's `confidence == "low"` and `estimated_impact == null`.
