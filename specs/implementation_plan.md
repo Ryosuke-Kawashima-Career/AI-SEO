@@ -45,7 +45,7 @@ Phase 0 (Setup)
 
 ## Phase 0 — Project Setup & Infrastructure
 
-### 00-01 — Initialize backend project structure `[todo]`
+### 00-01 — Initialize backend project structure `[done]`
 
 - **Design ref**: Section 8 (Directory Structure)
 - **Files to create**:
@@ -64,7 +64,7 @@ Phase 0 (Setup)
 
 ---
 
-### 00-02 — Initialize frontend project structure `[todo]`
+### 00-02 — Initialize frontend project structure `[done]`
 
 - **Depends on**: —
 - **Design ref**: Section 8 (Directory Structure)
@@ -79,7 +79,7 @@ Phase 0 (Setup)
 
 ---
 
-### 00-03 — Create Docker & environment configuration `[todo]`
+### 00-03 — Create Docker & environment configuration `[done]`
 
 - **Depends on**: 00-01, 00-02
 - **Design ref**: Section 2 (Technology Stack — Containerization)
