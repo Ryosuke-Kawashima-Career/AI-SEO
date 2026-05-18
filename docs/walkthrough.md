@@ -53,20 +53,65 @@ Expected: the table list prints `['app_settings', 'improvement_suggestions', 'li
 
 ## Phase 2 — URL Management API
 
-### What landed (Phase 2)
+REST CRUD for the registered-URL list (02-01: `backend/app/api/urls.py`, 02-02: 5 pytest cases — all pass).
 
-- **02-01 URL CRUD**: `backend/app/api/urls.py` — `GET /api/urls`, `POST /api/urls` (201, duplicate → 409 with `"This URL is already registered"`), `DELETE /api/urls/{id}` (204 / 404). Router wired into `main.py`; ORM models registered with `Base.metadata` on import.
-- **02-02 Unit tests**: `backend/tests/test_urls.py` — 5 cases (201, 409, 422, 204, 404) using `TestClient` + in-memory SQLite via shared-pool dependency override.
+### How to manage URLs
 
-### How to verify (Phase 2)
+Start the backend first:
+
+```bash
+cd backend && source .venv/bin/activate
+uvicorn main:app --reload   # http://localhost:8000
+```
+
+Then, in another terminal:
+
+```bash
+# Register a URL (expect 201)
+curl -X POST http://localhost:8000/api/urls \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/flights"}'
+
+# Register the same URL again (expect 409: "This URL is already registered")
+curl -X POST http://localhost:8000/api/urls \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/flights"}'
+
+# List all registered URLs
+curl http://localhost:8000/api/urls
+
+# Delete a URL by id (expect 204; 404 if missing)
+curl -X DELETE http://localhost:8000/api/urls/1
+```
+
+---
+
+## Phase 3 — Scanner Service
+
+`LighthouseAdapter` (03-01 ABC + 03-02 adapter + 03-03 4 passing tests) calls Google PageSpeed Insights v5 and returns 4 category scores, Core Web Vitals (LCP / INP / CLS), and per-audit detail.
+
+### How to get Lighthouse metrics
+
+Prerequisite: `PAGESPEED_API_KEY` set in `(project-root)/.env` (Google Cloud → APIs & Services → Credentials → PageSpeed Insights API key).
 
 ```bash
 cd backend
-.venv/bin/pytest tests/test_urls.py -v   # 5 passed
+set -a && . ../.env && set +a
 
-# Live curl (requires uvicorn running):
-curl -X POST http://localhost:8000/api/urls -d '{"url":"https://example.com/flights"}' -H "Content-Type: application/json"   # 201
-curl -X POST http://localhost:8000/api/urls -d '{"url":"https://example.com/flights"}' -H "Content-Type: application/json"   # 409
-curl -X DELETE http://localhost:8000/api/urls/1                                                                              # 204
-curl -X DELETE http://localhost:8000/api/urls/99999                                                                          # 404
+.venv/bin/python -c "
+from app.services.scanner.lighthouse import LighthouseAdapter
+r = LighthouseAdapter().fetch_scores('https://YOUR-TARGET-URL')
+print('Performance:   ', r.performance_score)
+print('SEO:           ', r.seo_score)
+print('Accessibility: ', r.accessibility_score)
+print('Best Practices:', r.best_practices_score)
+print('LCP (ms):      ', r.lcp_ms)
+print('INP (ms):      ', r.inp_ms)
+print('CLS:           ', r.cls)
+print('Audits:        ', len(r.audits))
+"
 ```
+
+`INP` may be `None` if PSI has no field data for the URL — correct behavior per FR-03.
+
+Run the unit tests: `cd backend && .venv/bin/pytest tests/test_scanner.py -v` (expect **4 passed**).

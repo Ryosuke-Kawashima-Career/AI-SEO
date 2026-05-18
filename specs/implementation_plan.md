@@ -32,7 +32,7 @@ Phase 0 (Setup)
                                                   ├── Phase 11 (URL Manager)
                                                   ├── Phase 12 (History)
                                                   ├── Phase 13 (Compare)
-                                                  ├── Phase 14 (Suggestions) ★ FR-08 frontend — higher priority than Email
+                                                  ├── Phase 14 (Suggestions) ★ FR-08 frontend
                                                   └── Phase 15 (Settings)
                                                         └── Phase 16 (Email Notifier) *
                                                               └── Phase 17 (Integration & Polish)
@@ -178,7 +178,7 @@ Phase 0 (Setup)
 
 ## Phase 3 — Scanner Service
 
-### 03-01 — Implement ScannerAdapter abstract base class `[todo]`
+### 03-01 — Implement ScannerAdapter abstract base class `[done]`
 
 - **Depends on**: 01-03
 - **Design ref**: Section 10.1 (Adapter Interface Definition — ScannerAdapter), NFR-05
@@ -190,7 +190,7 @@ Phase 0 (Setup)
 
 ---
 
-### 03-02 — Implement LighthouseAdapter (PageSpeed Insights API) `[todo]`
+### 03-02 — Implement LighthouseAdapter (PageSpeed Insights API) `[done]`
 
 - **Depends on**: 03-01
 - **Design ref**: Section 3 (LighthouseAdapter), Section 4.1 (Manual Scan flow), Section 10.1
@@ -214,7 +214,7 @@ Phase 0 (Setup)
 
 ---
 
-### 03-03 — Unit tests for LighthouseAdapter `[todo]`
+### 03-03 — Unit tests for LighthouseAdapter `[done]`
 
 - **Depends on**: 03-02
 - **Files to create**: `backend/tests/test_scanner.py`
