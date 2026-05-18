@@ -5,6 +5,7 @@ __pycache__/
 
 # Agents
 .claude
+.agent
 
 # C extensions
 *.so
