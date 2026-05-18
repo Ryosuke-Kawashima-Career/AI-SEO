@@ -95,7 +95,7 @@ Phase 0 (Setup)
 
 ## Phase 1 — Database & Core Models
 
-### 01-01 — Set up SQLAlchemy + SQLite connection `[todo]`
+### 01-01 — Set up SQLAlchemy + SQLite connection `[done]`
 
 - **Depends on**: 00-01
 - **Design ref**: Section 6 (Data Schema), Section 8
@@ -106,7 +106,7 @@ Phase 0 (Setup)
 
 ---
 
-### 01-02 — Create ORM models `[todo]`
+### 01-02 — Create ORM models `[done]`
 
 - **Depends on**: 01-01
 - **Design ref**: Section 6 (ER Diagram)
@@ -122,7 +122,7 @@ Phase 0 (Setup)
 
 ---
 
-### 01-03 — Create Pydantic schemas `[todo]`
+### 01-03 — Create Pydantic schemas `[done]`
 
 - **Depends on**: 01-02
 - **Design ref**: Section 7 (API Design — request/response bodies)
@@ -138,7 +138,7 @@ Phase 0 (Setup)
 
 ## Phase 2 — URL Management API
 
-### 02-01 — Implement URL CRUD endpoints `[todo]`
+### 02-01 — Implement URL CRUD endpoints `[done]`
 
 - **Depends on**: 01-02, 01-03
 - **Design ref**: Section 7 (URL Management — FR-01)
@@ -162,7 +162,7 @@ Phase 0 (Setup)
 
 ---
 
-### 02-02 — Unit tests for URL management `[todo]`
+### 02-02 — Unit tests for URL management `[done]`
 
 - **Depends on**: 02-01
 - **Files to create**: `backend/tests/test_urls.py`
