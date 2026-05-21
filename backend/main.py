@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import urls
+from app.api import scan, urls
 from app.core.database import Base, engine
 from app.models import (
     lighthouse_audit,
@@ -35,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(urls.router)
+app.include_router(scan.router)
 
 
 @app.get("/health")

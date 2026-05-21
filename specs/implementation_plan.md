@@ -229,7 +229,7 @@ Phase 0 (Setup)
 
 ## Phase 4 — Scan Runner & Job API
 
-### 04-01 — Implement ScanRunner service `[todo]`
+### 04-01 — Implement ScanRunner service `[done]`
 
 - **Depends on**: 03-02, 01-02
 - **Design ref**: Section 3 (ScanRunner), Section 4.1 (Manual Scan flow), Section 5.1 (ScanJob State Machine), Section 5.2 (ScanResult State Machine)
@@ -249,7 +249,7 @@ Phase 0 (Setup)
 
 ---
 
-### 04-02 — Implement Scan API endpoints `[todo]`
+### 04-02 — Implement Scan API endpoints `[done]`
 
 - **Depends on**: 04-01
 - **Design ref**: Section 7 (Scan — FR-02, FR-06)
@@ -270,7 +270,7 @@ Phase 0 (Setup)
 
 ---
 
-### 04-03 — Integration tests for scan flow `[todo]`
+### 04-03 — Integration tests for scan flow `[done]`
 
 - **Depends on**: 04-02
 - **Files to create**: `backend/tests/test_scan.py`
