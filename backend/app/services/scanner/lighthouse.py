@@ -25,7 +25,7 @@ def _audit_numeric(audits: dict[str, Any], key: str) -> float | None:
 
 
 class LighthouseAdapter(ScannerAdapter):
-    def __init__(self, api_key: str | None = None, timeout: float = 60.0) -> None:
+    def __init__(self, api_key: str | None = None, timeout: float = 180.0) -> None:
         self.api_key = api_key if api_key is not None else os.environ.get(
             "PAGESPEED_API_KEY", ""
         )

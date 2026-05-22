@@ -116,6 +116,17 @@ print('Audits:        ', len(r.audits))
 
 Run the unit tests: `cd backend && .venv/bin/pytest tests/test_scanner.py -v` (expect **4 passed**).
 
+### How to evaluate the real target URLs (step 03-04)
+
+The live integration suite runs PSI against every URL in [docs/target_websites.md](target_websites.md) and asserts each score is at or above the lower bound in [docs/lighthouse_baselines.md](lighthouse_baselines.md) (derived from `data/SEO_Page Score.xlsx`). Opt in by setting `RUN_LIVE_LIGHTHOUSE=1`:
+
+```bash
+cd backend && set -a && . ../.env && set +a
+RUN_LIVE_LIGHTHOUSE=1 .venv/bin/pytest tests/test_live_lighthouse.py -v
+```
+
+Without `RUN_LIVE_LIGHTHOUSE`, the suite is skipped so the default test run stays fast and offline.
+
 ---
 
 ## Phase 4 — Scan Runner & Job API

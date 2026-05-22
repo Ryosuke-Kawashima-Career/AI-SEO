@@ -2,7 +2,7 @@
 
 > **Source**: [design.md](design.md)
 > **Status**: Draft
-> **Last Updated**: 2026-05-18
+> **Last Updated**: 2026-05-22
 
 ---
 
@@ -23,22 +23,24 @@ Phase 0 (Setup)
         └── Phase 2 (URL Management API)
               └── Phase 3 (Scanner Service)
                     └── Phase 4 (Scan Runner & Job API)
-                          ├── Phase 5 (Scheduler)
-                          └── Phase 6 (Results API)
-                                └── Phase 7 (Suggester Service & API)        ★ FR-08 backend
-                                      └── Phase 8 (Frontend Foundation)
-                                            └── Phase 9 (Layout)
-                                                  ├── Phase 10 (Dashboard)
-                                                  ├── Phase 11 (URL Manager)
-                                                  ├── Phase 12 (History)
-                                                  ├── Phase 13 (Compare)
-                                                  ├── Phase 14 (Suggestions) ★ FR-08 frontend
-                                                  └── Phase 15 (Settings)
-                                                        └── Phase 16 (Email Notifier) *
-                                                              └── Phase 17 (Integration & Polish)
+                          ├── Phase 5 (Measure Log Ingestion) ★ FR-09        [depends on Phase 1]
+                          ├── Phase 6 (Scheduler)
+                          └── Phase 7 (Results API)
+                                └── Phase 8 (Suggester Service & API)        ★ FR-08, FR-09 backend
+                                      └── Phase 9 (Frontend Foundation)
+                                            └── Phase 10 (Layout)
+                                                  ├── Phase 11 (Dashboard)   ★ FR-09 AC-13 panel
+                                                  ├── Phase 12 (URL Manager)
+                                                  ├── Phase 13 (History)
+                                                  ├── Phase 14 (Compare)
+                                                  ├── Phase 15 (Suggestions) ★ FR-08, FR-09 frontend
+                                                  └── Phase 16 (Settings)
+                                                        └── Phase 17 (Email Notifier) *
+                                                              └── Phase 18 (Integration & Polish)
 
-* Phase 16 minimum code dependencies: Phase 0 (env vars) + Phase 4 (Scan Runner).
-  Scheduled after the Suggestions phase because FR-08 has higher business priority than FR-06's email notification.
+* Phase 17 minimum code dependencies: Phase 0 (env vars) + Phase 4 (Scan Runner).
+  Phase 5 (Measure Log) depends on Phase 1 directly; placed here for sequential execution after Phase 4.
+  Phase 8 (Suggester) depends on both Phase 7 (Results API) and Phase 5 (Measure Log) for FR-09 lookup.
 ```
 
 ---
@@ -116,23 +118,25 @@ Phase 0 (Setup)
   - `backend/app/models/scan_result.py` — `ScanResult` (id, url_id FK, job_id FK, scanned_at, performance_score, seo_score, accessibility_score, best_practices_score, lcp_ms, inp_ms, cls, status, error_reason, retry_count)
   - `backend/app/models/lighthouse_audit.py` — `LighthouseAudit` (id, scan_result_id FK, audit_id, title, category, score, display_value) — **FR-08 evidence**
   - `backend/app/models/suggestion.py` — `ImprovementSuggestion` (id, url_id FK, scan_result_id FK, audit_id, affected_dimension, action_description, estimated_impact, confidence_level, rank, generated_at) — **FR-08 cache**
+  - `backend/app/models/improvement_measure.py` — `ImprovementMeasure` (id, reporting_month, track, sequence_no, title, jira_id, goal_ref, why_what, expected_indicator, status, result, ingested_at); **UNIQUE constraint on (reporting_month, track, sequence_no)** — **FR-09**
   - `backend/app/models/settings.py` — `AppSettings` (id=1 singleton, scan_frequency, scan_time_utc, admin_email, updated_at)
-- **Acceptance Criteria**: `Base.metadata.create_all(engine)` creates all 6 tables in `seo.db`
-- **Verification**: `python -c "from app.core.database import Base, engine; from app.models import url, scan_job, scan_result, lighthouse_audit, suggestion, settings; Base.metadata.create_all(engine); print('Tables created')"` exits without error
+- **Acceptance Criteria**: `Base.metadata.create_all(engine)` creates all 7 tables in `seo.db`
+- **Verification**: `python -c "from app.core.database import Base, engine; from app.models import url, scan_job, scan_result, lighthouse_audit, suggestion, improvement_measure, settings; Base.metadata.create_all(engine); print('Tables created')"` exits without error
 
 ---
 
 ### 01-03 — Create Pydantic schemas `[done]`
 
 - **Depends on**: 01-02
-- **Design ref**: Section 7 (API Design — request/response bodies)
+- **Design ref**: Section 7 (API Design — request/response bodies), Section 10.2
 - **Files to create**:
   - `backend/app/schemas/url.py` — `UrlCreate`, `UrlResponse`
   - `backend/app/schemas/scan.py` — `ScanJobResponse`, `TriggerScanResponse`
   - `backend/app/schemas/result.py` — `ScanResultResponse`, `LatestResultResponse`, `ComparisonResultResponse`, `AppSettingsResponse`, `AppSettingsUpdate`
-  - `backend/app/schemas/suggestion.py` — `AuditRecord`, `SuggestionRecord`, `SuggestionResponse` (matches Section 7 — Suggestions JSON schema)
-- **Acceptance Criteria**: All schema classes import without error; `UrlCreate(url="https://example.com")` instantiates correctly
-- **Verification**: `python -c "from app.schemas.url import UrlCreate; from app.schemas.suggestion import SuggestionRecord; print('OK')"`
+  - `backend/app/schemas/measure.py` — `MeasureRecord` (reporting_month, track, title, jira_id, expected_indicator, status, result) — **FR-09**
+  - `backend/app/schemas/suggestion.py` — `PastMeasureRef`, `AuditRecord`, `SuggestionRecord` (includes `past_measures: List[PastMeasureRef]`), `SuggestionResponse`
+- **Acceptance Criteria**: All schema classes import without error; `UrlCreate(url="https://example.com")` instantiates correctly; `SuggestionRecord` with `past_measures=[]` validates
+- **Verification**: `python -c "from app.schemas.url import UrlCreate; from app.schemas.suggestion import SuggestionRecord; from app.schemas.measure import MeasureRecord; print('OK')"`
 
 ---
 
@@ -149,15 +153,15 @@ Phase 0 (Setup)
   - `POST /api/urls`: validate URL format (`http://` or `https://`); reject duplicate with HTTP 409 and message `"This URL is already registered"`; persist to DB; return 201
   - `DELETE /api/urls/{id}`: return 404 if not found; return 204 on success
 - **AC ref**: AC-01 (URL Registration), AC-02 (Duplicate URL Rejection)
-- **Verification**:
+- **Verification** (use a URL from [docs/target_websites.md](../docs/target_websites.md)):
 
   ```bash
   # Register
   curl -X POST http://localhost:8000/api/urls \
-    -d '{"url":"https://example.com/flights"}' -H "Content-Type: application/json"
+    -d '{"url":"https://adventure.inc/"}' -H "Content-Type: application/json"
   # Duplicate — expect HTTP 409
   curl -X POST http://localhost:8000/api/urls \
-    -d '{"url":"https://example.com/flights"}' -H "Content-Type: application/json"
+    -d '{"url":"https://adventure.inc/"}' -H "Content-Type: application/json"
   ```
 
 ---
@@ -209,8 +213,8 @@ Phase 0 (Setup)
 - **Audit mapping** (FR-08 evidence):
   - For each `audit_id` referenced in any `lighthouseResult.categories[*].auditRefs`, emit `AuditRecord(audit_id, title, category, score, display_value)`
   - `category` = parent category name (`performance`, `seo`, `accessibility`, `best-practices`)
-- **Acceptance Criteria**: `LighthouseAdapter().fetch_scores("https://example.com")` returns a `ScoreRecord` with the 7 score fields populated and `len(score_record.audits) > 0`
-- **Verification**: Run with a real API key in `.env`; assert `len(result.audits) > 0` and each audit has `audit_id` + `category`
+- **Acceptance Criteria**: `LighthouseAdapter().fetch_scores(target_url)` returns a `ScoreRecord` with the 7 score fields populated (or `null` per FR-03) and `len(score_record.audits) > 0` for every URL in [docs/target_websites.md](../docs/target_websites.md)
+- **Verification**: Run with a real `PAGESPEED_API_KEY` set; assert each result has `len(result.audits) > 0` and each audit has `audit_id` + `category`. Use the parametrized live suite from step 03-04 below.
 
 ---
 
@@ -224,6 +228,26 @@ Phase 0 (Setup)
   3. PSI HTTP 429 (rate limit) → raises `ScannerError`
   4. PSI response with N failing audits → `score_record.audits` contains N items with correct `audit_id` and `category` (FR-08)
 - **Verification**: `cd backend && pytest tests/test_scanner.py -v` — all 4 tests pass
+
+---
+
+### 03-04 — Live integration test against `docs/target_websites.md` `[done]`
+
+- **Depends on**: 03-02
+- **FR / NFR**: FR-02, FR-03, FR-08, NFR-05 (cross-cutting verification on the real target list)
+- **Files to create**:
+  - `backend/tests/test_live_lighthouse.py` — opt-in (gated by `RUN_LIVE_LIGHTHOUSE=1` and `PAGESPEED_API_KEY`); parses URLs from [docs/target_websites.md](../docs/target_websites.md); per-URL asserts (a) all 4 category scores are non-null, (b) `len(audits) > 50`, (c) each score is at or above the per-URL lower bound documented in [docs/lighthouse_baselines.md](../docs/lighthouse_baselines.md) (derived from `data/SEO_Page Score.xlsx`).
+  - `docs/lighthouse_baselines.md` — reference scores + acceptance bands per URL, with an update protocol.
+- **Rationale**: Replaces the previous reliance on `https://example.com` (which lacks real Core Web Vitals data and is not a project target). Anchors the LighthouseAdapter against the actual OTA pages so regressions in PSI request shape, category coverage, or audit emission are caught against production-shaped data.
+- **Acceptance Criteria**: With `RUN_LIVE_LIGHTHOUSE=1` set and a working `PAGESPEED_API_KEY`, the live suite passes for every URL in `docs/target_websites.md`. Without those env vars, the suite is **skipped**, so default CI / dev runs stay deterministic and fast.
+- **Verification**:
+
+  ```bash
+  cd backend
+  set -a && . ../.env && set +a
+  RUN_LIVE_LIGHTHOUSE=1 .venv/bin/pytest tests/test_live_lighthouse.py -v
+  # Expect: 2 tests per target URL × N URLs in docs/target_websites.md → all pass.
+  ```
 
 ---
 
@@ -244,8 +268,8 @@ Phase 0 (Setup)
      - **INSERT one `lighthouse_audits` row per `AuditRecord` in `ScoreRecord.audits`, linked to the new `scan_results.id`** (FR-08)
      - on all retries exhausted set `status=failed`
   3. after all URLs: UPDATE `scan_jobs (status=completed, completed_at, success_count, failure_count)`
-- **Acceptance Criteria**: After calling `execute()`, `scan_jobs.status = "completed"`, one `scan_results` row exists per registered URL, and `lighthouse_audits` rows exist for each successful scan
-- **Verification**: `sqlite3 seo.db "SELECT (SELECT COUNT(*) FROM scan_results), (SELECT COUNT(*) FROM lighthouse_audits);"` — both counts > 0
+- **Acceptance Criteria**: After calling `execute()`, `scan_jobs.status = "completed"`, one `scan_results` row exists per registered URL (use [docs/target_websites.md](../docs/target_websites.md)), and `lighthouse_audits` rows exist for each successful scan
+- **Verification**: Register every URL from `docs/target_websites.md`, run `scan_runner.execute()`, then `sqlite3 seo.db "SELECT COUNT(*) FROM scan_results; SELECT COUNT(*) FROM lighthouse_audits;"` — both counts > 0; `lighthouse_audits` should be ~150 × N URLs.
 
 ---
 
@@ -263,8 +287,9 @@ Phase 0 (Setup)
 - **Verification**:
 
   ```bash
+  # Pre-register every URL from docs/target_websites.md, then:
   JOB=$(curl -s -X POST http://localhost:8000/api/scan | jq -r '.job_id')
-  # Poll until completed
+  # Poll until completed (~5-15 s per URL)
   curl http://localhost:8000/api/scan/jobs/$JOB
   ```
 
@@ -284,9 +309,77 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 5 — Scheduler
+## Phase 5 — Historical Measure Log Ingestion (FR-09)
 
-### 05-01 — Integrate APScheduler with FastAPI `[todo]`
+> **Note**: Depends directly on Phase 1 (DB models). Placed here in execution order — after Phase 4 completes and before Phase 6 begins — so that the measure data is available when Phase 8 (Suggester) queries it.
+
+### 05-01 — Implement MeasureLogLoader service `[todo]`
+
+- **Depends on**: 01-02, 01-03
+- **Design ref**: Section 3 (MeasureLogLoader), Section 8 (Directory Structure)
+- **FR**: FR-09
+- **NFR**: NFR-09 (idempotent ingestion completing in < 10s)
+- **Files to create**:
+  - `backend/app/services/measure_loader.py` — `MeasureLogLoader`
+- **Logic**:
+  1. Read `data/SEO_Page_Score.md` relative to repo root
+  2. Parse monthly sections (`## YYYY-MM — NAP_SEOXX`), then per-track subsections (`### Frontend Measures`, `### Backend Measures`, `### Product Measures`)
+  3. For each bullet item extract: `sequence_no`, `title`, `jira_id` (from `` JIRA: `JIRA-ID` ``), `goal_ref`, `why_what`, `expected_indicator`, `status`, `result`
+  4. Upsert into `improvement_measures` using `(reporting_month, track, sequence_no)` as the idempotency key; update all mutable fields on conflict
+  5. Resilient parser: skip malformed entries with a `WARNING` log entry; never raise on partial failures
+- **Acceptance Criteria**:
+  - Running `MeasureLogLoader().ingest(db)` twice produces the same row count (idempotent, NFR-09)
+  - All rows have non-null `reporting_month`, `track`, `title`
+  - Rows with a `` JIRA: `JIRA-XXXX` `` pattern in the source have `jira_id` populated (FR-09 traceability, AC-12)
+  - Full ingestion of `data/SEO_Page_Score.md` completes in < 10 seconds (NFR-09)
+- **Verification**:
+
+  ```bash
+  cd backend
+  python -c "
+  from app.core.database import SessionLocal, Base, engine
+  from app.models import improvement_measure
+  from app.services.measure_loader import MeasureLogLoader
+  Base.metadata.create_all(engine)
+  db = SessionLocal()
+  count1 = MeasureLogLoader().ingest(db)
+  count2 = MeasureLogLoader().ingest(db)
+  assert count1 == count2, f'Not idempotent: {count1} vs {count2}'
+  print(f'Ingested {count1} measures (idempotent OK)')
+  db.close()
+  "
+  ```
+
+---
+
+### 05-02 — Implement GET /api/measures endpoint + tests `[todo]`
+
+- **Depends on**: 05-01
+- **Design ref**: Section 7 (Measures — FR-09, FR-04 AC-13)
+- **FR**: FR-09, FR-04
+- **Files to create**:
+  - `backend/app/api/measures.py` — `GET /api/measures?limit={n}` (default 10); queries `improvement_measures` ordered by `reporting_month DESC`, `track ASC`, `sequence_no ASC`; returns `[MeasureRecord]`
+  - `backend/tests/test_measures.py`
+- **Logic**: Simple `SELECT … ORDER BY reporting_month DESC LIMIT {limit}` on `improvement_measures`; maps each row to `MeasureRecord` schema
+- **Test cases**:
+  1. After `MeasureLogLoader().ingest(db)`, `GET /api/measures` returns at least one record (AC-13)
+  2. `limit` param caps the result count
+  3. Records are returned newest-first (`reporting_month DESC`)
+  4. Each record with a source JIRA ID has `jira_id` non-null (FR-09 traceability)
+- **AC ref**: AC-13 (Dashboard Shows Recent Measures), FR-09 (JIRA traceability)
+- **Verification**:
+
+  ```bash
+  curl "http://localhost:8000/api/measures?limit=5"
+  # Expect 5 records, newest reporting_month first, jira_id present where applicable
+  cd backend && pytest tests/test_measures.py -v
+  ```
+
+---
+
+## Phase 6 — Scheduler
+
+### 06-01 — Integrate APScheduler with FastAPI `[todo]`
 
 - **Depends on**: 04-01
 - **Design ref**: Section 3 (APScheduler), Section 4.2 (Scheduled Scan flow)
@@ -298,9 +391,9 @@ Phase 0 (Setup)
 
 ---
 
-### 05-02 — Implement Settings API endpoints `[todo]`
+### 06-02 — Implement Settings API endpoints `[todo]`
 
-- **Depends on**: 05-01, 01-02
+- **Depends on**: 06-01, 01-02
 - **Design ref**: Section 7 (Settings — FR-06)
 - **FR**: FR-06
 - **Files to create**:
@@ -311,9 +404,9 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 6 — Results API
+## Phase 7 — Results API
 
-### 06-01 — Implement GET /api/results/latest `[todo]`
+### 07-01 — Implement GET /api/results/latest `[todo]`
 
 - **Depends on**: 04-02, 01-03
 - **Design ref**: Section 7 (Results), Section 4.3 (Dashboard Load flow)
@@ -325,9 +418,9 @@ Phase 0 (Setup)
 
 ---
 
-### 06-02 — Implement GET /api/results/history `[todo]`
+### 07-02 — Implement GET /api/results/history `[todo]`
 
-- **Depends on**: 06-01
+- **Depends on**: 07-01
 - **Design ref**: Section 7 (Results), FR-05
 - **FR**: FR-05
 - **Logic**: Filter `scan_results` by `url_id`, `scanned_at >= from`, `scanned_at <= to`; return ordered by `scanned_at ASC`
@@ -336,9 +429,9 @@ Phase 0 (Setup)
 
 ---
 
-### 06-03 — Implement GET /api/results/compare `[todo]`
+### 07-03 — Implement GET /api/results/compare `[todo]`
 
-- **Depends on**: 06-01
+- **Depends on**: 07-01
 - **Design ref**: Section 7 (Results), Section 4.5 (Score Comparison flow)
 - **FR**: FR-07
 - **Logic**: Fetch one record for `baseline` date and one for `comparison` date for the given `url_id`; if either is missing return HTTP 404 with `"No scan record found for the selected date"`; compute `delta = compare_score - baseline_score` per dimension
@@ -353,9 +446,9 @@ Phase 0 (Setup)
 
 ---
 
-### 06-04 — Implement GET /api/results/export (CSV) `[todo]`
+### 07-04 — Implement GET /api/results/export (CSV) `[todo]`
 
-- **Depends on**: 06-02
+- **Depends on**: 07-02
 - **Design ref**: Section 7 (Results), FR-05
 - **FR**: FR-05
 - **Logic**: Same filter as `/history`; stream response as `text/csv` with headers: `url,scanned_at,performance_score,seo_score,accessibility_score,best_practices_score,lcp_ms,inp_ms,cls`
@@ -364,9 +457,9 @@ Phase 0 (Setup)
 
 ---
 
-### 06-05 — Integration tests for Results API `[todo]`
+### 07-05 — Integration tests for Results API `[todo]`
 
-- **Depends on**: 06-01 ~ 06-04
+- **Depends on**: 07-01 ~ 07-04
 - **Files to create**: `backend/tests/test_results.py`
 - **Test cases**:
   1. `/latest` returns one result per registered URL
@@ -378,27 +471,27 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 7 — Suggester Service & API (FR-08 Backend)
+## Phase 8 — Suggester Service & API (FR-08, FR-09 Backend)
 
-> **Priority note**: Higher priority than the Email Notifier (Phase 16). Implemented immediately after the Results API so the SEO-specialist persona can derive value as early as possible.
+> **Priority note**: Higher priority than the Email Notifier (Phase 17). Implemented immediately after the Results API so the SEO-specialist persona can derive value as early as possible. Also depends on Phase 5 (Measure Log) to enrich suggestions with past JIRA-linked measures (FR-09).
 
-### 07-01 — Implement SuggesterAdapter abstract base class `[todo]`
+### 08-01 — Implement SuggesterAdapter abstract base class `[todo]`
 
 - **Depends on**: 01-03, 03-01
 - **Design ref**: Section 10.2 (Adapter Interface Definition — SuggesterAdapter), NFR-05, NFR-08
 - **NFR**: NFR-05 (replaceability), NFR-08 (explainability)
 - **Files to create**:
-  - `backend/app/services/suggester/base.py` — `SuggestionRecord` dataclass + `SuggesterAdapter` ABC with `generate(url_id, latest_audits, history) → List[SuggestionRecord]`
-- **Acceptance Criteria**: `from app.services.suggester.base import SuggesterAdapter, SuggestionRecord` imports without error; instantiating `SuggesterAdapter()` raises `TypeError`
-- **Verification**: `python -c "from app.services.suggester.base import SuggesterAdapter; SuggesterAdapter()"`
+  - `backend/app/services/suggester/base.py` — `PastMeasureRef` dataclass + `SuggestionRecord` dataclass (includes `past_measures: List[PastMeasureRef]`) + `SuggesterAdapter` ABC with `generate(url_id, latest_audits, history, past_measures) → List[SuggestionRecord]`
+- **Acceptance Criteria**: `from app.services.suggester.base import SuggesterAdapter, SuggestionRecord` imports without error; instantiating `SuggesterAdapter()` raises `TypeError`; `SuggestionRecord` can be constructed with `past_measures=[]`
+- **Verification**: `python -c "from app.services.suggester.base import SuggesterAdapter, SuggestionRecord; SuggesterAdapter()"`
 
 ---
 
-### 07-02 — Implement HeuristicSuggester + audit templates `[todo]`
+### 08-02 — Implement HeuristicSuggester + audit templates `[todo]`
 
-- **Depends on**: 07-01, 01-02 (`lighthouse_audit`, `suggestion` ORM models)
+- **Depends on**: 08-01, 01-02 (`lighthouse_audit`, `suggestion` ORM models), 05-01 (`improvement_measures` model available)
 - **Design ref**: Section 3 (HeuristicSuggester), Section 6 (Confidence Rule), Section 10.2
-- **FR**: FR-08
+- **FR**: FR-08, FR-09
 - **Files to create**:
   - `backend/app/services/suggester/templates.py` — static map `AUDIT_TEMPLATES: Dict[str, Tuple[str, str]]` mapping `audit_id → (affected_dimension, action_description)` for at least 15 common Lighthouse audits (e.g., `image-alt`, `meta-description`, `offscreen-images`, `unused-javascript`, `render-blocking-resources`, `uses-text-compression`, `largest-contentful-paint`, etc.)
   - `backend/app/services/suggester/heuristic.py` — `HeuristicSuggester(SuggesterAdapter)`
@@ -407,52 +500,57 @@ Phase 0 (Setup)
   2. For each kept audit, lookup template by `audit_id`; **drop if no template exists** (FR-08 traceability constraint)
   3. Compute `estimated_impact`: mean Δ of the same `audit_id` across `history` (between prior scans where the audit went from failing → passing); `None` if `sample_size == 0`
   4. Assign `confidence_level` per Section 6 rule: `high` if sample_size ≥ 5; `medium` if 2–4; `low` if ≤ 1
-  5. Return `List[SuggestionRecord]` sorted by descending `estimated_impact` (`None` sorts last)
-- **Acceptance Criteria**: Given a fixture of failing audits + empty history, returns suggestions for templated audits with `confidence == "low"` and `estimated_impact == None`; given history with prior remediations, computes correct mean Δ and confidence
+  5. Filter `past_measures` to those whose `expected_indicator` matches the audit's `affected_dimension`; attach as `SuggestionRecord.past_measures` (newest-first, max 5) — **FR-09 enrichment**
+  6. Return `List[SuggestionRecord]` sorted by descending `estimated_impact` (`None` sorts last)
+- **Acceptance Criteria**: Given a fixture of failing audits + empty history + empty past_measures, returns suggestions with `confidence == "low"` and `estimated_impact == None` and `past_measures == []`; given past_measures with a matching indicator, the suggestion includes the `PastMeasureRef` entry (AC-12)
 - **Verification**: `cd backend && pytest tests/test_suggester_heuristic.py -v`
 
 ---
 
-### 07-03 — Implement SuggestionService + API endpoints `[todo]`
+### 08-03 — Implement SuggestionService + API endpoints `[todo]`
 
-- **Depends on**: 07-02, 04-01 (`lighthouse_audits` exist in DB)
+- **Depends on**: 08-02, 04-01 (`lighthouse_audits` exist in DB), 05-01 (`improvement_measures` seeded)
 - **Design ref**: Section 3 (SuggestionService), Section 4.4 (Suggestion Generation flow), Section 7 (Suggestions API)
-- **FR**: FR-08
+- **FR**: FR-08, FR-09
 - **NFR**: NFR-07 (suggestion latency < 5s), NFR-08 (traceability)
 - **Files to create**:
-  - `backend/app/services/suggester/service.py` — `SuggestionService`: orchestrates the `SuggesterAdapter` call, applies ranking, UPSERTs cached results into `improvement_suggestions` keyed by `(url_id, scan_result_id)`
+  - `backend/app/services/suggester/service.py` — `SuggestionService`
+    - Orchestrates the `SuggesterAdapter` call, applies ranking, UPSERTs cached results into `improvement_suggestions` keyed by `(url_id, scan_result_id)`
+    - Before calling the adapter, fetches `improvement_measures` WHERE `expected_indicator` matches any failing audit's dimension; passes them as `past_measures` to `generate()` — **FR-09 lookup per Section 4.4**
   - `backend/app/api/suggestions.py` — `GET /api/suggestions?url_id={id}`, `GET /api/suggestions/audits?url_id={id}&scan_id={id?}`
 - **Logic**:
-  - On `GET /api/suggestions`: fetch latest `scan_result` + its `lighthouse_audits`; fetch history; call `SuggestionService.get_suggestions(url_id)`; return cached result if `(url_id, latest scan_result_id)` already exists in `improvement_suggestions`, else compute, cache, return
+  - On `GET /api/suggestions`: fetch latest `scan_result` + its `lighthouse_audits`; fetch history; fetch `past_measures` from `improvement_measures`; call `SuggestionService.get_suggestions(url_id)`; return cached result if `(url_id, latest scan_result_id)` already exists in `improvement_suggestions`, else compute, cache, return
   - On `GET /api/suggestions/audits`: return raw `lighthouse_audits` for NFR-08 audit traceability
-- **AC ref**: AC-10
+- **AC ref**: AC-10, AC-12
 - **Verification**:
 
   ```bash
   curl "http://localhost:8000/api/suggestions?url_id=1"
-  # Confirm ranked array, first item has highest estimated_impact
+  # Confirm: ranked array; first item has highest estimated_impact;
+  # items with a matching past measure have non-empty past_measures[] (AC-12)
   curl "http://localhost:8000/api/suggestions/audits?url_id=1"
   ```
 
 ---
 
-### 07-04 — Integration tests for Suggester `[todo]`
+### 08-04 — Integration tests for Suggester `[todo]`
 
-- **Depends on**: 07-03
+- **Depends on**: 08-03
 - **Files to create**: `backend/tests/test_suggestions.py`
 - **Test cases**:
   1. AC-10: latest scan with N failing templated audits → `GET /api/suggestions` returns N ranked items within 5s (NFR-07)
-  2. AC-11: failing audit with no historical precedent → returned item has `confidence_level == "low"` and `estimated_impact is None`
-  3. Items returned are sorted by descending `estimated_impact` (with `None` last)
-  4. Audits without a template entry are dropped from the response (FR-08 traceability constraint)
-  5. Second call with no new scan returns the cached row (no recomputation) — assert `generated_at` is unchanged
+  2. AC-11: failing audit with no historical precedent → returned item has `confidence_level == "low"` and `estimated_impact is None` and `past_measures == []`
+  3. AC-12: failing audit that matches an `improvement_measures` record (by `expected_indicator`) → `past_measures` contains the entry with correct `jira_id` and `title`, ordered newest-first
+  4. Items returned are sorted by descending `estimated_impact` (with `None` last)
+  5. Audits without a template entry are dropped from the response (FR-08 traceability constraint)
+  6. Second call with no new scan returns the cached row (no recomputation) — assert `generated_at` is unchanged
 - **Verification**: `cd backend && pytest tests/test_suggestions.py -v`
 
 ---
 
-## Phase 8 — Frontend Foundation
+## Phase 9 — Frontend Foundation
 
-### 08-01 — Configure Axios API client `[todo]`
+### 09-01 — Configure Axios API client `[todo]`
 
 - **Depends on**: 00-02
 - **Design ref**: Section 8 (Directory Structure — `frontend/src/api/client.ts`)
@@ -463,9 +561,9 @@ Phase 0 (Setup)
 
 ---
 
-### 08-02 — Configure React Router `[todo]`
+### 09-02 — Configure React Router `[todo]`
 
-- **Depends on**: 08-01
+- **Depends on**: 09-01
 - **Design ref**: Section 9.1 (Page Map)
 - **Files to create**:
   - `frontend/src/main.tsx` — `<BrowserRouter>` wrapping `<App />`
@@ -475,11 +573,11 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 9 — Frontend: Layout
+## Phase 10 — Frontend: Layout
 
-### 09-01 — Implement Navbar component `[todo]`
+### 10-01 — Implement Navbar component `[todo]`
 
-- **Depends on**: 08-02
+- **Depends on**: 09-02
 - **Files to create**:
   - `frontend/src/components/Navbar.tsx` — navigation links: Dashboard `/`, URL Manager `/urls`, History `/history`, Compare `/compare`, Suggestions `/suggestions`, Settings `/settings`
 - **Acceptance Criteria**: Navbar renders on all pages; clicking each of the 6 links navigates to the correct route
@@ -487,11 +585,11 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 10 — Frontend: Dashboard
+## Phase 11 — Frontend: Dashboard
 
-### 10-01 — Implement StatusBadge component `[todo]`
+### 11-01 — Implement StatusBadge component `[todo]`
 
-- **Depends on**: 09-01
+- **Depends on**: 10-01
 - **Design ref**: Section 9.2 (Dashboard Page)
 - **FR**: FR-04
 - **Files to create**:
@@ -500,9 +598,9 @@ Phase 0 (Setup)
 
 ---
 
-### 10-02 — Implement ScoreTable component `[todo]`
+### 11-02 — Implement ScoreTable component `[todo]`
 
-- **Depends on**: 10-01
+- **Depends on**: 11-01
 - **Design ref**: Section 9.2 (Dashboard Page)
 - **FR**: FR-04
 - **Files to create**:
@@ -512,23 +610,39 @@ Phase 0 (Setup)
 
 ---
 
-### 10-03 — Implement Dashboard page `[todo]`
+### 11-03 — Implement RecentMeasures component `[todo]`
 
-- **Depends on**: 10-02
-- **Design ref**: Section 9.2
-- **FR**: FR-04
+- **Depends on**: 10-01, 05-02 (GET /api/measures available)
+- **Design ref**: Section 8 (Directory Structure), Section 7 (Measures API), FR-04, FR-09
+- **FR**: FR-04, FR-09
 - **Files to create**:
-  - `frontend/src/pages/Dashboard.tsx` — fetches `GET /api/results/latest` on mount; renders `<ScoreTable>`; "Scan Now" button calls `POST /api/scan` and polls `GET /api/scan/jobs/{id}` every 3s until `status=completed`; shows spinner during scan
-- **AC ref**: AC-05 (Dashboard Score Display — loads within 3s, NFR-01)
-- **Verification**: Open Dashboard → scores load; click "Scan Now" → spinner appears, then results refresh
+  - `frontend/src/components/RecentMeasures.tsx` — props: `measures: MeasureRecord[]`; renders a side panel listing recent improvement activities: `reporting_month`, `title`, `jira_id` (as a badge if present), `expected_indicator`, `status`
+- **Acceptance Criteria**: Renders all passed measure entries; renders `jira_id` as a distinct badge when present; renders `status` with appropriate styling (completed = green, in_progress = yellow)
+- **AC ref**: AC-13 (Dashboard Shows Recent Measures)
+- **Verification**: Manual render with mock data including entries with and without `jira_id`
 
 ---
 
-## Phase 11 — Frontend: URL Manager
+### 11-04 — Implement Dashboard page `[todo]`
 
-### 11-01 — Implement UrlManager page `[todo]`
+- **Depends on**: 11-02, 11-03
+- **Design ref**: Section 9.2
+- **FR**: FR-04, FR-09
+- **Files to create**:
+  - `frontend/src/pages/Dashboard.tsx`
+    - Fetches `GET /api/results/latest` and `GET /api/measures?limit=5` in parallel on mount
+    - Renders `<ScoreTable>` (main content area) and `<RecentMeasures>` (side panel)
+    - "Scan Now" button calls `POST /api/scan` and polls `GET /api/scan/jobs/{id}` every 3s until `status=completed`; shows spinner during scan
+- **AC ref**: AC-05 (Dashboard Score Display — loads within 3s, NFR-01), AC-13 (Recent Measures panel)
+- **Verification**: Open Dashboard → scores load + Recent Measures side panel shows recent activities; click "Scan Now" → spinner appears, then results refresh
 
-- **Depends on**: 09-01
+---
+
+## Phase 12 — Frontend: URL Manager
+
+### 12-01 — Implement UrlManager page `[todo]`
+
+- **Depends on**: 10-01
 - **Design ref**: Section 9.1, FR-01
 - **FR**: FR-01
 - **Files to create**:
@@ -538,11 +652,11 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 12 — Frontend: History
+## Phase 13 — Frontend: History
 
-### 12-01 — Implement TrendChart component `[todo]`
+### 13-01 — Implement TrendChart component `[todo]`
 
-- **Depends on**: 09-01
+- **Depends on**: 10-01
 - **Design ref**: Section 9.3 (History Page)
 - **FR**: FR-05
 - **Files to create**:
@@ -551,9 +665,9 @@ Phase 0 (Setup)
 
 ---
 
-### 12-02 — Implement History page `[todo]`
+### 13-02 — Implement History page `[todo]`
 
-- **Depends on**: 12-01
+- **Depends on**: 13-01
 - **Design ref**: Section 9.3
 - **FR**: FR-05
 - **Files to create**:
@@ -563,11 +677,11 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 13 — Frontend: Compare
+## Phase 14 — Frontend: Compare
 
-### 13-01 — Implement CompareTable component `[todo]`
+### 14-01 — Implement CompareTable component `[todo]`
 
-- **Depends on**: 09-01
+- **Depends on**: 10-01
 - **Design ref**: Section 9.4 (Compare Page)
 - **FR**: FR-07
 - **Files to create**:
@@ -577,9 +691,9 @@ Phase 0 (Setup)
 
 ---
 
-### 13-02 — Implement Compare page `[todo]`
+### 14-02 — Implement Compare page `[todo]`
 
-- **Depends on**: 13-01
+- **Depends on**: 14-01
 - **Design ref**: Section 9.4
 - **FR**: FR-07
 - **Files to create**:
@@ -589,42 +703,47 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 14 — Frontend: Suggestions (FR-08 Frontend)
+## Phase 15 — Frontend: Suggestions (FR-08, FR-09 Frontend)
 
-> **Priority note**: It exposes the SEO-improvement-suggestion functionality introduced by FR-08 to the SEO Specialist persona.
+> **Priority note**: Exposes the SEO-improvement-suggestion functionality to the SEO Specialist persona, including JIRA-linked past measure evidence from FR-09.
 
-### 14-01 — Implement SuggestionList component `[todo]`
+### 15-01 — Implement SuggestionList component `[todo]`
 
-- **Depends on**: 09-01, 07-03 (suggestion API available)
+- **Depends on**: 10-01, 08-03 (suggestion API available)
 - **Design ref**: Section 9.5 (Suggestions Page), Section 7 (Suggestions API)
-- **FR**: FR-08
+- **FR**: FR-08, FR-09
 - **Files to create**:
-  - `frontend/src/components/SuggestionList.tsx` — props: `suggestions: SuggestionRecord[]`; renders one ranked row per suggestion with columns: Rank, Affected Dimension, Action Description, Δ Estimated Impact (or `N/A` when `estimated_impact == null`), Confidence (high / medium / low badge); each row is expandable to show the originating Lighthouse audit detail (`audit_id`, `title`, `display_value`) for NFR-08 traceability
-- **Acceptance Criteria**: Renders ranked rows in input order; renders `"N/A"` for null impact; renders the audit_id evidence in the expanded view
-- **Verification**: Manual render with mock data — confirm ranking + `N/A` rendering + audit_id visible on expand
+  - `frontend/src/components/SuggestionList.tsx`
+    - props: `suggestions: SuggestionRecord[]`
+    - Renders one ranked row per suggestion: Rank, Affected Dimension, Action Description, Δ Estimated Impact (or `N/A`), Confidence badge
+    - Each row is expandable to show: (a) originating Lighthouse audit detail (`audit_id`, `title`, `display_value`) for NFR-08 traceability; (b) **`past_measures` list** with `reporting_month`, `title`, `jira_id` badge (AC-12)
+- **Acceptance Criteria**: Renders ranked rows; renders `"N/A"` for null impact; renders `past_measures` JIRA entries in expanded view when present; renders nothing in the measures section when `past_measures == []`
+- **AC ref**: AC-12 (Suggestion Cites Past Measures)
+- **Verification**: Manual render with mock data — confirm JIRA badge visible on expand when `past_measures` non-empty; section absent when empty
 
 ---
 
-### 14-02 — Implement Suggestions page `[todo]`
+### 15-02 — Implement Suggestions page `[todo]`
 
-- **Depends on**: 14-01
+- **Depends on**: 15-01
 - **Design ref**: Section 9.5, FR-08, NFR-07
-- **FR**: FR-08
+- **FR**: FR-08, FR-09
 - **NFR**: NFR-07 (latency < 5s), NFR-08 (explainability)
 - **Files to create**:
   - `frontend/src/pages/Suggestions.tsx` — URL selector dropdown (sourced from `GET /api/urls`); on selection fetches `GET /api/suggestions?url_id={id}` and renders `<SuggestionList>`; shows spinner during fetch; surfaces the `generated_at` timestamp from the response so the specialist can see whether the cache is stale
-- **AC ref**: AC-10 (Suggestion Display), AC-11 (Confidence Fallback)
+- **AC ref**: AC-10 (Suggestion Display), AC-11 (Confidence Fallback), AC-12 (Past Measures in expanded row)
 - **Verification**:
   - Select a URL with a recent scan that has failing audits → ranked list appears within 5s, top item has highest Δ
   - Select a URL whose failing audit has no historical precedent → its row shows `"low"` confidence and `"N/A"` impact
+  - Expand a row for an audit with a matching past measure → JIRA badge and title appear (AC-12)
 
 ---
 
-## Phase 15 — Frontend: Settings
+## Phase 16 — Frontend: Settings
 
-### 15-01 — Implement Settings page `[todo]`
+### 16-01 — Implement Settings page `[todo]`
 
-- **Depends on**: 09-01
+- **Depends on**: 10-01
 - **Design ref**: Section 9.6 (Settings Page)
 - **FR**: FR-06
 - **Files to create**:
@@ -634,11 +753,11 @@ Phase 0 (Setup)
 
 ---
 
-## Phase 16 — Email Notifier
+## Phase 17 — Email Notifier
 
 > **Priority note**: Deferred to after the Suggestions phase. Minimum code dependencies are Phase 0 (env vars) and Phase 4 (Scan Runner). No earlier phase is blocked by this phase. FR-08 (Suggestions) was prioritized ahead of FR-06's email notification because it directly serves the SEO Specialist persona's primary "Why".
 
-### 16-01 — Implement Notifier service `[todo]`
+### 17-01 — Implement Notifier service `[todo]`
 
 - **Depends on**: 00-03, 04-01
 - **Design ref**: Section 3 (Notifier), Section 4.1 (Manual Scan flow — email)
@@ -650,47 +769,47 @@ Phase 0 (Setup)
 
 ---
 
-### 16-02 — Wire Notifier into ScanRunner `[todo]`
+### 17-02 — Wire Notifier into ScanRunner `[todo]`
 
-- **Depends on**: 16-01, 04-01
+- **Depends on**: 17-01, 04-01
 - **Files to modify**: `backend/app/services/scan_runner.py`
 - **Change**: After `UPDATE scan_jobs (status=completed)`, call `notifier.send_notification(job)`
 - **Acceptance Criteria**: End-to-end scan triggers email delivery
-- **Verification**: Same as 16-01 — trigger scan via `POST /api/scan`; confirm email
+- **Verification**: Same as 17-01 — trigger scan via `POST /api/scan`; confirm email
 
 ---
 
-## Phase 17 — Integration Testing & Polish
+## Phase 18 — Integration Testing & Polish
 
-### 17-01 — End-to-end golden path test `[todo]`
+### 18-01 — End-to-end golden path test `[todo]`
 
-- **Depends on**: All phases 00–16 done
+- **Depends on**: All phases 00–17 done
 - **Scenario**: Full user journey covering both the OTA-president and SEO-specialist personas
   1. Register 3 URLs via `POST /api/urls`
   2. Trigger manual scan via `POST /api/scan` → poll until `completed`
-  3. Load Dashboard → verify scores visible within 3s (NFR-01)
+  3. Load Dashboard → verify scores visible within 3s (NFR-01); **verify Recent Measures side panel shows historical activities (AC-13)**
   4. Load History page → verify chart renders for 1 URL
   5. Load Compare page → verify delta table renders
-  6. **Load Suggestions page → verify ranked suggestions appear within 5s (NFR-07); verify each suggestion cites a Lighthouse audit ID (NFR-08)**
+  6. **Load Suggestions page → verify ranked suggestions appear within 5s (NFR-07); verify each suggestion cites a Lighthouse audit ID (NFR-08); expand a row and verify JIRA-linked past measure appears (AC-12)**
   7. Load Settings → change schedule; verify scheduler updates
   8. Trigger scan → verify email notification arrives
 - **Verification**: Manually execute each step; record pass/fail per AC
 
 ---
 
-### 17-02 — Performance check (NFR-01) `[todo]`
+### 18-02 — Performance check (NFR-01) `[todo]`
 
-- **Depends on**: 10-03
+- **Depends on**: 11-04
 - **NFR**: NFR-01 (Dashboard load < 3s)
 - **Tool**: Chrome DevTools → Network tab → "DOMContentLoaded" and "Load" timings; or Lighthouse CLI on `http://localhost:5173/`
-- **Acceptance Criteria**: Dashboard `Load` event fires in < 3000ms on a 50 Mbps throttled connection
+- **Acceptance Criteria**: Dashboard `Load` event fires in < 3000ms on a 50 Mbps throttled connection (note: parallel fetch of `/api/results/latest` + `/api/measures` must complete within this budget)
 - **Verification**: Chrome DevTools → Network tab → throttle to "Fast 4G"; reload Dashboard; confirm timing
 
 ---
 
-### 17-03 — Performance check (NFR-07 — Suggestion latency) `[todo]`
+### 18-03 — Performance check (NFR-07 — Suggestion latency) `[todo]`
 
-- **Depends on**: 14-02
+- **Depends on**: 15-02
 - **NFR**: NFR-07 (Suggestion generation latency < 5s per URL, server-side)
 - **Tool**: `curl -w "%{time_total}\n"` or browser DevTools Network panel
 - **Acceptance Criteria**: `GET /api/suggestions?url_id={id}` returns in < 5000ms on a URL with ≥ 10 failing audits and ≥ 30 days of history
@@ -703,7 +822,7 @@ Phase 0 (Setup)
 
 ---
 
-### 17-04 — Update README.md `[todo]`
+### 18-04 — Update README.md `[todo]`
 
 - **Depends on**: All phases done
 - **Files to modify**: `README.md`
@@ -718,21 +837,22 @@ Phase 0 (Setup)
 | Phase | Name | Steps | Key FR/NFR |
 | --- | --- | --- | --- |
 | 0 | Project Setup | 00-01 ~ 00-03 | — |
-| 1 | DB & Models | 01-01 ~ 01-03 | All FRs + FR-08 |
+| 1 | DB & Models | 01-01 ~ 01-03 | All FRs + FR-08 + FR-09 |
 | 2 | URL Management API | 02-01 ~ 02-02 | FR-01 |
-| 3 | Scanner Service | 03-01 ~ 03-03 | FR-02, FR-03, FR-08, NFR-05 |
+| 3 | Scanner Service | 03-01 ~ 03-04 | FR-02, FR-03, FR-08, NFR-05 |
 | 4 | Scan Runner & Job API | 04-01 ~ 04-03 | FR-02, FR-06, FR-08 |
-| 5 | Scheduler | 05-01 ~ 05-02 | FR-06 |
-| 6 | Results API | 06-01 ~ 06-05 | FR-04, FR-05, FR-07 |
-| 7 | Suggester Service & API | 07-01 ~ 07-04 | FR-08, NFR-05, NFR-07, NFR-08 |
-| 8 | Frontend Foundation | 08-01 ~ 08-02 | — |
-| 9 | Layout | 09-01 | — |
-| 10 | Dashboard | 10-01 ~ 10-03 | FR-04, NFR-01 |
-| 11 | URL Manager | 11-01 | FR-01 |
-| 12 | History | 12-01 ~ 12-02 | FR-05 |
-| 13 | Compare | 13-01 ~ 13-02 | FR-07 |
-| 14 | Suggestions (Frontend) | 14-01 ~ 14-02 | FR-08, NFR-07, NFR-08 |
-| 15 | Settings | 15-01 | FR-06 |
-| 16 | Email Notifier | 16-01 ~ 16-02 | FR-06 |
-| 17 | Integration & Polish | 17-01 ~ 17-04 | NFR-01, NFR-07 |
-| **Total** | | **45 steps** | |
+| 5 | Measure Log Ingestion | 05-01 ~ 05-02 | FR-09, NFR-09 |
+| 6 | Scheduler | 06-01 ~ 06-02 | FR-06 |
+| 7 | Results API | 07-01 ~ 07-05 | FR-04, FR-05, FR-07 |
+| 8 | Suggester Service & API | 08-01 ~ 08-04 | FR-08, FR-09, NFR-05, NFR-07, NFR-08 |
+| 9 | Frontend Foundation | 09-01 ~ 09-02 | — |
+| 10 | Layout | 10-01 | — |
+| 11 | Dashboard | 11-01 ~ 11-04 | FR-04, FR-09, NFR-01 |
+| 12 | URL Manager | 12-01 | FR-01 |
+| 13 | History | 13-01 ~ 13-02 | FR-05 |
+| 14 | Compare | 14-01 ~ 14-02 | FR-07 |
+| 15 | Suggestions (Frontend) | 15-01 ~ 15-02 | FR-08, FR-09, NFR-07, NFR-08 |
+| 16 | Settings | 16-01 | FR-06 |
+| 17 | Email Notifier | 17-01 ~ 17-02 | FR-06 |
+| 18 | Integration & Polish | 18-01 ~ 18-04 | NFR-01, NFR-07, AC-12, AC-13 |
+| **Total** | | **50 steps** | |

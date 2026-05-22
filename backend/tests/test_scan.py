@@ -36,7 +36,7 @@ def _make_score_record(audit_ids: list[str] | None = None) -> ScoreRecord:
 
 
 def test_post_scan_returns_202_with_job_id(client):
-    client.post("/api/urls", json={"url": "https://example.com/flights"})
+    client.post("/api/urls", json={"url": "https://adventure.inc/"})
 
     with patch("app.api.scan._execute_in_background") as mock_bg:
         response = client.post("/api/scan")
@@ -49,7 +49,7 @@ def test_post_scan_returns_202_with_job_id(client):
 
 def test_execute_marks_job_completed(test_db_session, monkeypatch):
     monkeypatch.setattr("app.services.scan_runner.time.sleep", lambda _x: None)
-    test_db_session.add(RegisteredUrl(url="https://a.example.com"))
+    test_db_session.add(RegisteredUrl(url="https://adventure.inc/"))
     test_db_session.commit()
 
     adapter = MagicMock()
@@ -67,7 +67,11 @@ def test_execute_marks_job_completed(test_db_session, monkeypatch):
 
 def test_execute_inserts_scan_result_per_registered_url(test_db_session, monkeypatch):
     monkeypatch.setattr("app.services.scan_runner.time.sleep", lambda _x: None)
-    for url in ("https://a.example.com", "https://b.example.com", "https://c.example.com"):
+    for url in (
+        "https://adventure.inc/",
+        "https://adventure.inc/about-us",
+        "https://adventure.inc/hotels",
+    ):
         test_db_session.add(RegisteredUrl(url=url))
     test_db_session.commit()
 
@@ -88,7 +92,7 @@ def test_execute_inserts_scan_result_per_registered_url(test_db_session, monkeyp
 
 def test_execute_persists_lighthouse_audits(test_db_session, monkeypatch):
     monkeypatch.setattr("app.services.scan_runner.time.sleep", lambda _x: None)
-    test_db_session.add(RegisteredUrl(url="https://a.example.com"))
+    test_db_session.add(RegisteredUrl(url="https://adventure.inc/"))
     test_db_session.commit()
 
     adapter = MagicMock()
@@ -106,7 +110,9 @@ def test_execute_persists_lighthouse_audits(test_db_session, monkeypatch):
 
 def test_execute_marks_failed_after_three_retries(test_db_session, monkeypatch):
     monkeypatch.setattr("app.services.scan_runner.time.sleep", lambda _x: None)
-    test_db_session.add(RegisteredUrl(url="https://failing.example.com"))
+    # Deliberately use an unregistered subdomain so a real PSI call would fail;
+    # the adapter is mocked here, so this string is only a label.
+    test_db_session.add(RegisteredUrl(url="https://failing.adventure.inc/"))
     test_db_session.commit()
 
     adapter = MagicMock()

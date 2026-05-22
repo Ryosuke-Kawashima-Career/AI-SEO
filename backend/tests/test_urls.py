@@ -1,16 +1,16 @@
 def test_register_valid_url_returns_201(client):
     response = client.post(
-        "/api/urls", json={"url": "https://example.com/flights"}
+        "/api/urls", json={"url": "https://adventure.inc/"}
     )
     assert response.status_code == 201
     body = response.json()
     assert body["id"] >= 1
-    assert body["url"].startswith("https://example.com")
+    assert body["url"].startswith("https://adventure.inc")
     assert body["label"] is None
 
 
 def test_register_duplicate_url_returns_409(client):
-    payload = {"url": "https://example.com/flights"}
+    payload = {"url": "https://adventure.inc/"}
     first = client.post("/api/urls", json=payload)
     assert first.status_code == 201
 
@@ -26,7 +26,7 @@ def test_register_invalid_url_returns_422(client):
 
 def test_delete_existing_url_returns_204(client):
     created = client.post(
-        "/api/urls", json={"url": "https://example.com/hotels"}
+        "/api/urls", json={"url": "https://adventure.inc/hotels"}
     )
     url_id = created.json()["id"]
 
