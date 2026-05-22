@@ -38,3 +38,21 @@ def client():
     app.dependency_overrides.clear()
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture
+def test_db_session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = TestSession()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

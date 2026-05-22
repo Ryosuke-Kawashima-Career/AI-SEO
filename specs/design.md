@@ -2,7 +2,7 @@
 
 > **Source**: [requirements.md](requirements.md)
 > **Status**: Draft
-> **Last Updated**: 2026-05-18
+> **Last Updated**: 2026-05-22
 
 ---
 
@@ -28,8 +28,9 @@ The SEO Evaluation System is a web-based monitoring platform that:
 1. Accepts a registry of target page URLs managed.
 2. Executes automated Lighthouse scans — via the Google PageSpeed Insights API — on a configurable schedule.
 3. Persists all score records historically in a relational database.
-4. Presents current and historical scores on an interactive dashboard.
+4. Presents current and historical scores on an interactive dashboard, including a "Recent Measures" panel of the latest activities from the historical log (FR-04, FR-09).
 5. Generates ranked, evidence-linked SEO improvement suggestions for SEO specialists, derived from the latest Lighthouse audits and historical remediation effects (FR-08).
+6. Ingests a historical SEO improvement measure log (`data/SEO_Page_Score.md`) into a structured table so that the suggestion engine can cite past remediation evidence with JIRA IDs and expected indicators (FR-09).
 
 ### Design Principle
 
@@ -47,6 +48,7 @@ The SEO Evaluation System is a web-based monitoring platform that:
 | **SEO Scanner** | Google PageSpeed Insights API | Server-side Lighthouse runner; no headless Chrome installation required |
 | **Suggestion Engine** | Heuristic rule engine over Lighthouse audit IDs + historical scan deltas | Zero external dependency for MVP; encapsulated behind `SuggesterAdapter` (NFR-05) so it can later be swapped for an LLM- or ML-backed implementation |
 | **Database** | SQLite (via SQLAlchemy ORM) | Zero-config for MVP; adapter layer allows migration to PostgreSQL |
+| **Historical Log Parser** | Python `re` (stdlib) | Zero-dependency Markdown parser for `data/SEO_Page_Score.md`; idempotent upsert into `improvement_measures` (FR-09) |
 | **Email** | Python `smtplib` | Standard library; SMTP relay configurable via environment variables |
 | **Containerization** | Docker + docker-compose | Reproducible environment; single `docker-compose up` to start |
 
@@ -69,11 +71,13 @@ graph TD
         SuggesterAdapter["SuggesterAdapter\n(Abstract Interface)"]
         HeuristicSuggester["HeuristicSuggester\n(Lighthouse audits + history)"]
         SuggestionService["SuggestionService\n(Ranking + Confidence)"]
+        MeasureLogLoader["MeasureLogLoader\n(FR-09 Ingestion)"]
         Notifier["Notifier\n(Email Service)"]
     end
 
     subgraph DataStore["Data Store"]
-        DB[("SQLite DB\nregistered_urls\nscan_jobs\nscan_results\nlighthouse_audits\nimprovement_suggestions\napp_settings")]
+        DB[("SQLite DB\nregistered_urls\nscan_jobs\nscan_results\nlighthouse_audits\nimprovement_suggestions\nimprovement_measures\napp_settings")]
+        LogFile["data/SEO_Page_Score.md\n(historical log)"]
     end
 
     subgraph External["External Services"]
@@ -95,6 +99,9 @@ graph TD
     SuggestionService --> SuggesterAdapter
     SuggesterAdapter --> HeuristicSuggester
     HeuristicSuggester --> DB
+    MeasureLogLoader -->|"parse + upsert"| DB
+    LogFile -->|"read at startup"| MeasureLogLoader
+    API --> MeasureLogLoader
 ```
 
 ### Component Responsibilities
@@ -108,8 +115,9 @@ graph TD
 | **ScannerAdapter** | Abstract base class — `fetch_scores(url) → ScoreRecord` | NFR-05 |
 | **LighthouseAdapter** | Calls PageSpeed Insights API; maps response to `ScoreRecord` **and** per-audit detail (`AuditRecord[]`) | FR-02, FR-03, FR-08 |
 | **SuggesterAdapter** | Abstract base class — `generate(url_id, latest_audits, history) → SuggestionRecord[]` | NFR-05, NFR-08 |
-| **HeuristicSuggester** | MVP implementation: maps failing Lighthouse audits to action templates; estimates Δ from comparable historical remediations | FR-08, NFR-08 |
+| **HeuristicSuggester** | MVP implementation: maps failing Lighthouse audits to action templates; estimates Δ from comparable historical remediations; enriches each suggestion with matching `improvement_measures` records | FR-08, FR-09, NFR-08 |
 | **SuggestionService** | Orchestrates the call to `SuggesterAdapter`, applies ranking & confidence rules, caches results | FR-08, NFR-07 |
+| **MeasureLogLoader** | Parses `data/SEO_Page_Score.md`; upserts records into `improvement_measures` by `(reporting_month, track, sequence_no)`; idempotent | FR-09, NFR-09 |
 | **Notifier** | Sends scan-completion email via SMTP | FR-06 |
 | **SQLite DB** | Persists all domain data including per-audit detail and cached suggestions | FR-01~08 |
 
@@ -206,9 +214,11 @@ sequenceDiagram
     DB-->>SvcS: latest_scan + failing_audits[]
     SvcS->>DB: SELECT historical lighthouse_audits + scan_results WHERE url_id=42
     DB-->>SvcS: history[]
-    SvcS->>SugA: generate(url_id, failing_audits, history)
-    Note over SugA: For each failing audit:\n1. Lookup action template by audit_id\n2. Compute estimated Δ from prior remediations\n3. Assign confidence (high/medium/low)\n4. Drop audits with no template (no traceable evidence)
-    SugA-->>SvcS: SuggestionRecord[] (unranked)
+    SvcS->>DB: SELECT improvement_measures WHERE audit_id IN (failing_audit_ids)\nORDER BY reporting_month DESC LIMIT 5 per audit
+    DB-->>SvcS: past_measures[] (FR-09)
+    SvcS->>SugA: generate(url_id, failing_audits, history, past_measures)
+    Note over SugA: For each failing audit:\n1. Lookup action template by audit_id\n2. Compute estimated Δ from prior remediations\n3. Assign confidence (high/medium/low)\n4. Attach matching past_measures (JIRA IDs, titles)\n5. Drop audits with no template (no traceable evidence)
+    SugA-->>SvcS: SuggestionRecord[] (unranked, with past_measures)
     SvcS->>SvcS: Rank by descending estimated_impact
     SvcS->>DB: UPSERT improvement_suggestions (cache)
     SvcS-->>API: ranked SuggestionRecord[]
@@ -354,6 +364,21 @@ erDiagram
         DATETIME generated_at
     }
 
+    IMPROVEMENT_MEASURES {
+        INTEGER id PK
+        TEXT    reporting_month   "YYYY-MM — UNIQUE with track+seq"
+        TEXT    track             "frontend | backend | product"
+        INTEGER sequence_no       "1-based within track+month"
+        TEXT    title             "measure title from log"
+        TEXT    jira_id           "e.g., JIRA-1234; null if absent"
+        TEXT    goal_ref          "G-N reference; null if absent"
+        TEXT    why_what          "narrative description"
+        TEXT    expected_indicator "expected metric to improve"
+        TEXT    status            "completed | in_progress | cancelled | null"
+        TEXT    result            "outcome narrative; null if absent"
+        DATETIME ingested_at      "row insert / update timestamp"
+    }
+
     REGISTERED_URLS ||--o{ SCAN_RESULTS         : "has"
     SCAN_JOBS       ||--o{ SCAN_RESULTS         : "contains"
     SCAN_RESULTS    ||--o{ LIGHTHOUSE_AUDITS    : "details"
@@ -432,11 +457,41 @@ All endpoints are prefixed `/api`. All requests/responses use `application/json`
   "evidence": {
     "sample_size":       3,
     "historical_scan_ids": [108, 142, 173]
-  }
+  },
+  "past_measures": [
+    {
+      "reporting_month":    "2026-03",
+      "title":              "Add alt text to product images",
+      "jira_id":            "JIRA-4089",
+      "expected_indicator": "accessibility",
+      "status":             "completed"
+    }
+  ]
 }
 ```
 
 > When `estimated_impact == null`, the UI must render the field as `"N/A"` and `confidence_level` must be `"low"` (AC-11).
+> When `past_measures` is empty, the UI must not render the evidence section (AC-12 positive case requires at least one entry).
+
+### Measures — FR-09, FR-04 (AC-13)
+
+| Method | Path            | Query Params         | Response                                                                  |
+|--------|-----------------|----------------------|---------------------------------------------------------------------------|
+| `GET`  | `/api/measures` | `limit` (default 10) | `[MeasureRecord]` - newest-first; Dashboard "Recent Measures" panel AC-13 |
+
+`MeasureRecord` schema:
+
+```json
+{
+  "reporting_month":    "2026-03",
+  "track":              "frontend",
+  "title":              "Implement lazy-loading for hotel images",
+  "jira_id":            "JIRA-4201",
+  "expected_indicator": "LCP",
+  "status":             "completed",
+  "result":             "LCP improved from 4.2s to 2.8s on /hotels"
+}
+```
 
 ### Settings — FR-06
 
@@ -451,12 +506,15 @@ All endpoints are prefixed `/api`. All requests/responses use `application/json`
 
 ```text
 AI-SEO/
+├── data/
+│   └── SEO_Page_Score.md        # FR-09: historical measure log (Aug 2025 – Mar 2026)
 ├── backend/
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── urls.py          # FR-01: URL CRUD
 │   │   │   ├── scan.py          # FR-02, FR-06: job trigger + status
 │   │   │   ├── results.py       # FR-04, FR-05, FR-07: dashboard + history + compare
+│   │   │   ├── measures.py      # FR-09: GET /api/measures (Recent Measures panel)
 │   │   │   ├── suggestions.py   # FR-08: ranked SEO improvement suggestions
 │   │   │   └── settings.py      # FR-06: schedule + email config
 │   │   ├── core/
@@ -467,14 +525,16 @@ AI-SEO/
 │   │   │   ├── url.py           # RegisteredUrl ORM model
 │   │   │   ├── scan_job.py      # ScanJob ORM model
 │   │   │   ├── scan_result.py   # ScanResult ORM model
-│   │   │   ├── lighthouse_audit.py     # LighthouseAudit ORM model — FR-08 evidence
-│   │   │   ├── suggestion.py           # ImprovementSuggestion ORM model — FR-08
+│   │   │   ├── lighthouse_audit.py      # LighthouseAudit ORM model — FR-08 evidence
+│   │   │   ├── suggestion.py            # ImprovementSuggestion ORM model — FR-08
+│   │   │   ├── improvement_measure.py   # ImprovementMeasure ORM model — FR-09
 │   │   │   └── settings.py      # AppSettings ORM model
 │   │   ├── schemas/
 │   │   │   ├── url.py           # Pydantic request/response schemas
 │   │   │   ├── scan.py
 │   │   │   ├── result.py
-│   │   │   └── suggestion.py    # SuggestionRecord, AuditRecord schemas
+│   │   │   ├── measure.py       # MeasureRecord schema — FR-09
+│   │   │   └── suggestion.py    # SuggestionRecord (with past_measures), AuditRecord schemas
 │   │   └── services/
 │   │       ├── scanner/
 │   │       │   ├── base.py      # ScannerAdapter (Abstract Base Class) — NFR-05
@@ -483,14 +543,16 @@ AI-SEO/
 │   │       │   ├── base.py      # SuggesterAdapter (Abstract Base Class) — NFR-05, NFR-08
 │   │       │   ├── heuristic.py # HeuristicSuggester: rule-based MVP implementation
 │   │       │   ├── templates.py # Static map: lighthouse audit_id → action_description, affected_dimension
-│   │       │   └── service.py   # SuggestionService: ranking, confidence, caching
+│   │       │   └── service.py   # SuggestionService: ranking, confidence, caching + FR-09 lookup
+│   │       ├── measure_loader.py # FR-09: parses SEO_Page_Score.md; upserts improvement_measures
 │   │       ├── scan_runner.py   # Orchestrates scan jobs + retry logic (max 3×)
 │   │       └── notifier.py      # Email notification via smtplib
 │   ├── tests/
 │   │   ├── test_urls.py
 │   │   ├── test_scan.py
 │   │   ├── test_results.py
-│   │   └── test_suggestions.py  # FR-08, AC-10, AC-11
+│   │   ├── test_measures.py     # FR-09, AC-13: measures ingestion + GET /api/measures
+│   │   └── test_suggestions.py  # FR-08, FR-09, AC-10, AC-11, AC-12
 │   ├── main.py                  # FastAPI app entry point
 │   └── requirements.txt
 ├── frontend/
@@ -501,9 +563,10 @@ AI-SEO/
 │   │   │   ├── CompareTable.tsx # FR-07: Delta table with ▲/▼
 │   │   │   ├── StatusBadge.tsx  # Pass / Warning / Fail badge
 │   │   │   ├── SuggestionList.tsx # FR-08: ranked suggestion cards
+│   │   │   ├── RecentMeasures.tsx # FR-09, AC-13: "Recent Measures" side panel
 │   │   │   └── Navbar.tsx
 │   │   ├── pages/
-│   │   │   ├── Dashboard.tsx    # FR-04
+│   │   │   ├── Dashboard.tsx    # FR-04, FR-09: score table + Recent Measures panel
 │   │   │   ├── UrlManager.tsx   # FR-01
 │   │   │   ├── History.tsx      # FR-05
 │   │   │   ├── Compare.tsx      # FR-07
@@ -691,14 +754,23 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 @dataclass
+class PastMeasureRef:
+    reporting_month:    str            # "YYYY-MM"
+    title:              str
+    jira_id:            Optional[str]  # None if not recorded
+    expected_indicator: Optional[str]
+    status:             Optional[str]  # "completed" | "in_progress" | etc.
+
+@dataclass
 class SuggestionRecord:
-    audit_id:             str             # traceability to AuditRecord.audit_id (NFR-08)
-    affected_dimension:   str             # performance | seo | accessibility | best-practices
-    action_description:   str             # plain-language remediation
-    estimated_impact:     Optional[float] # Δ score; None when no historical evidence
-    confidence_level:     str             # "high" | "medium" | "low"
-    rank:                 int             # 1 = highest expected impact
-    historical_scan_ids:  List[int]       # NFR-08 traceability
+    audit_id:             str               # traceability to AuditRecord.audit_id (NFR-08)
+    affected_dimension:   str               # performance | seo | accessibility | best-practices
+    action_description:   str               # plain-language remediation
+    estimated_impact:     Optional[float]   # Δ score; None when no historical evidence
+    confidence_level:     str               # "high" | "medium" | "low"
+    rank:                 int               # 1 = highest expected impact
+    historical_scan_ids:  List[int]         # NFR-08 traceability
+    past_measures:        List[PastMeasureRef]  # FR-09: linked measures, newest-first, max 5
 
 class SuggesterAdapter(ABC):
     @abstractmethod
@@ -707,6 +779,7 @@ class SuggesterAdapter(ABC):
         url_id: int,
         latest_audits: List["AuditRecord"],
         history: List["AuditRecord"],
+        past_measures: List[PastMeasureRef],
     ) -> List[SuggestionRecord]:
         """Produce a ranked list of SEO improvement suggestions.
 

@@ -2,7 +2,7 @@
 
 > **Source**: [user_story.md](user_story.md)
 > **Status**: Draft
-> **Last Updated**: 2026-05-18
+> **Last Updated**: 2026-05-21
 
 ---
 
@@ -13,13 +13,14 @@ User Story
   ├── FR-01  URL Management
   ├── FR-02  Automated SEO Score Retrieval
   ├── FR-03  SEO Score Dimensions
-  ├── FR-04  Dashboard Display
+  ├── FR-04  Dashboard Display              (now contextualized by FR-09)
   ├── FR-05  Historical Score Tracking
   ├── FR-06  Scheduled Automatic Scanning
   ├── FR-07  Score Change Comparison
-  └── FR-08  SEO Improvement Suggestion
-        ├── NFR-01 ~ NFR-08
-        └── AC-01 ~ AC-11
+  ├── FR-08  SEO Improvement Suggestion     (now consumes FR-09 as evidence)
+  └── FR-09  Historical Measure Log Ingestion  ★ new
+        ├── NFR-01 ~ NFR-09
+        └── AC-01 ~ AC-13
 ```
 
 ---
@@ -64,10 +65,10 @@ User Story
 
 | Item | Detail |
 |---|---|
-| **Description** | The system must present a visual dashboard displaying the latest SEO scores for all registered URLs. |
-| **Input** | Latest scan records retrieved from the data store |
-| **Output** | A rendered dashboard page showing, per URL: current scores for all dimensions in FR-03, scan timestamp, and a status indicator (pass / warning / fail) based on score thresholds. |
-| **Constraints** | - Score threshold for "pass": ≥ 90. "Warning": 50–89. "Fail": < 50. - Dashboard must be accessible via a standard web browser without additional software installation.|
+| **Description** | The system must present a visual dashboard displaying the latest SEO scores for all registered URLs, **contextualized by the most recent SEO improvement measures from the historical log (FR-09)** so the OTA president can see not just the current state but also which actions are driving it. |
+| **Input** | Latest scan records retrieved from the data store; the N most recent records from `improvement_measures` (FR-09). |
+| **Output** | A rendered dashboard page showing, per URL: current scores for all dimensions in FR-03, scan timestamp, a status indicator (pass / warning / fail), and a **"Recent Measures" side panel** listing the 3–5 most recent measures whose `expected_indicator` corresponds to one of the displayed dimensions (e.g., a measure tagged `LCP` appears next to the Performance dimension). Each listed measure must show: reporting month, title, JIRA ID, and status. |
+| **Constraints** | - Score threshold for "pass": ≥ 90. "Warning": 50–89. "Fail": < 50. - Dashboard must be accessible via a standard web browser without additional software installation. - When `improvement_measures` is empty (e.g., before first ingestion), the "Recent Measures" panel must render as "No historical measures recorded" rather than failing. |
 
 ---
 
@@ -108,15 +109,23 @@ User Story
 
 | Item | Detail |
 |---|---|
-| **Description** | The system must generate actionable SEO improvement suggestions for a target URL, derived from (a) the latest Lighthouse audit findings and (b) the historical effect of previously applied measures recorded in the system, so that an SEO specialist can prioritize the most impactful improvements. |
+| **Description** | The system must generate actionable SEO improvement suggestions for a target URL, derived from (a) the latest Lighthouse audit findings, (b) the historical effect of previously applied measures inferred from `lighthouse_audits` deltas, and **(c) the catalogue of past SEO improvement measures ingested from the historical log (FR-09)** so the SEO specialist can prioritize improvements grounded in what has actually worked on this OTA before. |
 | **Actor** | SEO Specialist |
-| **Input** | Target URL; the latest scan record (FR-02 / FR-03); historical scan records (FR-05); the set of failing or sub-optimal Lighthouse audit items (`audits[].score < 0.9`). |
-| **Output** | A ranked list of suggestions. Each suggestion item must contain: 1. **Affected Dimension** (e.g., Performance, SEO, Accessibility). 2. **Action Description** in plain language (e.g., "Add `alt` attributes to images"). 3. **Originating Lighthouse Audit ID** (e.g., `image-alt`). 4. **Estimated Score Impact** (Δ) per dimension, derived from past observed deltas (FR-07) of comparable measures. 5. **Confidence Level** (`high` / `medium` / `low`) based on historical sample size. |
-| **Constraints** | - Suggestions must be ranked by descending **Estimated Score Impact** (Δ). - Each suggestion must cite the originating Lighthouse audit; suggestions without traceable evidence must not be displayed. - When no historical comparable measure exists, **Confidence Level** must default to `low` and Estimated Score Impact may be displayed as `N/A`. - The suggestion module must be encapsulated behind an adapter interface (per NFR-05) so the underlying inference engine can be replaced without altering dashboard logic. |
+| **Input** | Target URL; the latest scan record (FR-02 / FR-03); historical scan records (FR-05); the set of failing or sub-optimal Lighthouse audit items (`audits[].score < 0.9`); **the catalogue of `improvement_measures` from FR-09** filtered by matching `expected_indicator`. |
+| **Output** | A ranked list of suggestions. Each suggestion item must contain: 1. **Affected Dimension** (e.g., Performance, SEO, Accessibility). 2. **Action Description** in plain language (e.g., "Add `alt` attributes to images"). 3. **Originating Lighthouse Audit ID** (e.g., `image-alt`). 4. **Estimated Score Impact** (Δ) per dimension, derived from past observed deltas (FR-07) of comparable measures **plus** the documented before/after notes in `improvement_measures` (FR-09). 5. **Confidence Level** (`high` / `medium` / `low`) based on the combined sample size from both sources. 6. **Past Measures** — a list of `{reporting_month, title, jira_id, expected_indicator, status}` references from `improvement_measures` whose `expected_indicator` matches the affected dimension; this is the FR-09-driven evidence trail. |
+| **Constraints** | - Suggestions must be ranked by descending **Estimated Score Impact** (Δ). - Each suggestion must cite the originating Lighthouse audit; suggestions without traceable evidence must not be displayed. - **Past Measures** must be sorted by `reporting_month` descending (newest first) and capped at the 5 most recent matches. - When neither audit history nor matching `improvement_measures` exist, **Confidence Level** must default to `low` and Estimated Score Impact may be displayed as `N/A`. - The suggestion module must be encapsulated behind an adapter interface (per NFR-05) so the underlying inference engine can be replaced without altering dashboard logic. |
 
 ---
 
-## 2. Non-Functional Requirements
+### FR-09 — Historical Measure Log Ingestion (履歴施策ログ取込)
+
+| Item | Detail |
+|---|---|
+| **Description** | The system must ingest the project's historical SEO improvement measure log (`data/SEO_Page_Score.md`, derived from `data/SEO_Page Score.xlsx`) and persist each measure as a queryable record, so the dashboard (FR-04) and the suggester (FR-08) can both ground themselves in what was actually shipped on this OTA in prior months. |
+| **Actor** | System (loader runs on demand and on startup); read access available to FR-04 and FR-08 components. |
+| **Input** | The Markdown file `data/SEO_Page_Score.md`. The file is structured as monthly sections (`## YYYY-MM — NAP_SEO…`), each containing per-track subsections (`### Frontend Measures`, `### Backend Measures`, `### Product (UI/UX & Tech Strategy) Measures`) with per-measure bullets of the form `**#N.N Title** — JIRA: `JIRA-ID` — Goal: G-N`, followed by `Why/What`, `Expected indicator(s) to improve`, and `Status / Result` lines. |
+| **Output** | Rows in a new `improvement_measures` table. Each row must capture: `reporting_month` (e.g., `"2025-09"`), `track` (`"frontend"` / `"backend"` / `"product"`), `sequence_no` (e.g., `"#2.0"`), `title`, `jira_id`, `goal_code` (e.g., `"F-1"`), `expected_indicator` (e.g., `"LCP"`, `"SEO"`, `"TBT"`, `"CLS"`, `"FCP"`, or a comma-separated combination), `status_note` (the verbatim "Status / Result" text), `rationale` (the verbatim "Why/What" text, bilingual), and `source_anchor` (a heading slug that lets the UI deep-link back to the source section). |
+| **Constraints** | - **Idempotent**: re-ingesting the same file must not duplicate rows. The natural key is `(reporting_month, track, sequence_no)`; on collision, the row must be updated, not inserted. - **Parser resilience**: malformed bullets must be skipped with a logged warning rather than aborting the whole ingest. - **No external network calls**: ingestion is purely a local-file → DB operation. - When `data/SEO_Page_Score.md` is absent, the system must start normally with `improvement_measures` empty and emit a one-line startup warning (`"Historical measure log not found at data/SEO_Page_Score.md — past-measure context will be empty."`). |
 
 | ID | Category | Requirement | Metric |
 |---|---|---|---|
@@ -127,7 +136,8 @@ User Story
 | **NFR-05** | Maintainability | Scoring engine replaceability | The SEO scoring API integration must be encapsulated behind an adapter interface so that the provider can be swapped without modifying dashboard logic |
 | **NFR-06** | Browser Compatibility | Supported browsers | Latest 2 major versions of Chrome, Firefox, Safari, and Edge |
 | **NFR-07** | Performance (Suggestion) | Suggestion generation latency | < 5 seconds per URL on the latest scan record, measured server-side |
-| **NFR-08** | Explainability | Suggestion traceability | Every suggestion must be traceable to (a) a specific Lighthouse audit ID and (b) the historical scan records used to estimate its impact; this mapping must be queryable via API for audit purposes |
+| **NFR-08** | Explainability | Suggestion traceability | Every suggestion must be traceable to (a) a specific Lighthouse audit ID, (b) the historical scan records used to estimate its impact, and (c) the matching `improvement_measures` JIRA IDs from FR-09; the full evidence mapping must be queryable via API |
+| **NFR-09** | Maintainability (Data Ingestion) | Historical log refresh | The `data/SEO_Page_Score.md` ingestion (FR-09) must be re-runnable at any time and converge on the same row set for the same input file (idempotent upsert by `(reporting_month, track, sequence_no)`); ingestion of the full file must complete in < 10 seconds on the MVP single-server deployment |
 
 ---
 
@@ -278,10 +288,43 @@ And the list is sorted in descending order of Estimated Score Impact
 ```gherkin
 Given a failing Lighthouse audit "image-alt" exists in the latest scan
   And no historical scan record contains a prior remediation of "image-alt"
+  And no improvement_measures row has expected_indicator matching "accessibility"
 When the system generates suggestions for that URL
 Then the suggestion for "image-alt" is still displayed
 And its Confidence Level is set to "low"
 And its Estimated Score Impact is displayed as "N/A"
+And its past_measures list is empty
 ```
 
-**Verification**: Automated unit test — provide a fixture with zero historical precedent for the audit and assert the suggestion item's `confidence == "low"` and `estimated_impact == null`.
+**Verification**: Automated unit test — provide a fixture with zero historical precedent and an empty `improvement_measures` table; assert `confidence == "low"`, `estimated_impact == null`, and `past_measures == []`.
+
+---
+
+### AC-12 — Suggestion Cites Past Measures (→ FR-08, FR-09, NFR-08)
+
+```gherkin
+Given the improvement_measures table contains 3 rows whose expected_indicator is "LCP"
+  And the latest scan for a target URL has a failing audit "largest-contentful-paint" (score < 0.9)
+When the SEO specialist opens the "Suggestions" view for that URL
+Then the suggestion for "largest-contentful-paint" lists those 3 past measures
+And each listed measure shows: reporting_month, title, jira_id, status
+And the past_measures list is sorted by reporting_month descending
+```
+
+**Verification**: Automated integration test — seed 3 measures (e.g., from 2025-08 / 2025-09 / 2025-10), trigger suggestion generation, assert the JIRA IDs appear in newest-first order; manual UI test that the panel renders.
+
+---
+
+### AC-13 — Dashboard Shows Recent Measures (→ FR-04, FR-09)
+
+```gherkin
+Given the improvement_measures table contains at least 5 rows
+  And scan records exist for all registered URLs
+When the user opens the dashboard
+Then the "Recent Measures" panel displays the 3-5 most recent measures
+And each measure shows: reporting_month, title, jira_id, status
+And measures are sorted by reporting_month descending
+And when improvement_measures is empty, the panel renders "No historical measures recorded"
+```
+
+**Verification**: Automated integration test (panel content + sort order); manual UI test (visual placement next to the score table, and empty-state fallback).

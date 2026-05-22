@@ -115,3 +115,47 @@ print('Audits:        ', len(r.audits))
 `INP` may be `None` if PSI has no field data for the URL — correct behavior per FR-03.
 
 Run the unit tests: `cd backend && .venv/bin/pytest tests/test_scanner.py -v` (expect **4 passed**).
+
+### How to evaluate the real target URLs (step 03-04)
+
+The live integration suite runs PSI against every URL in [docs/target_websites.md](target_websites.md) and asserts each score is at or above the lower bound in [docs/lighthouse_baselines.md](lighthouse_baselines.md) (derived from `data/SEO_Page Score.xlsx`). Opt in by setting `RUN_LIVE_LIGHTHOUSE=1`:
+
+```bash
+cd backend && set -a && . ../.env && set +a
+RUN_LIVE_LIGHTHOUSE=1 .venv/bin/pytest tests/test_live_lighthouse.py -v
+```
+
+Without `RUN_LIVE_LIGHTHOUSE`, the suite is skipped so the default test run stays fast and offline.
+
+---
+
+## Phase 4 — Scan Runner & Job API
+
+`POST /api/scan` enqueues a background scan that calls `LighthouseAdapter` per registered URL (retry 3× with 1 s / 2 s / 4 s backoff) and writes `scan_results` + `lighthouse_audits` (FR-08). 04-01 runner + 04-02 API + 04-03 5 mocked tests — all pass; live PSI scan persisted **1 scan_result + 151 lighthouse_audits**.
+
+### How to trigger a scan
+
+Start the backend with the API key loaded:
+
+```bash
+cd backend && set -a && . ../.env && set +a
+.venv/bin/python -m uvicorn main:app --reload      # http://localhost:8000
+```
+
+Then, in another terminal:
+
+```bash
+# 1. Register a target URL
+curl -X POST http://localhost:8000/api/urls \
+  -H "Content-Type: application/json" -d '{"url":"https://example.com"}'
+
+# 2. Trigger a scan (expect 202)
+JOB=$(curl -s -X POST http://localhost:8000/api/scan | python3 -c "import json,sys;print(json.load(sys.stdin)['job_id'])")
+echo "job_id=$JOB"
+
+# 3. Poll until completed (~5-15 s per URL)
+until [ "$(curl -s http://localhost:8000/api/scan/jobs/$JOB | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')" = "completed" ]; do sleep 1; done
+curl -s http://localhost:8000/api/scan/jobs/$JOB | python3 -m json.tool
+```
+
+Tests: `cd backend && .venv/bin/pytest tests/test_scan.py -v` (expect **5 passed**).
